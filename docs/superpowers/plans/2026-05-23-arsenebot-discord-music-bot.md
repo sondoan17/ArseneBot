@@ -4,7 +4,7 @@
 
 **Goal:** Build ArseneBot, a Discord slash-command YouTube music bot with queue, loop, shuffle, seek, volume, remove, leave, and auto-leave behavior.
 
-**Architecture:** Create a small CommonJS Node.js app where slash command files parse Discord interactions and delegate all playback state to `MusicManager`/`GuildPlayer`. Keep YouTube-specific behavior isolated in `src/music/youtube.js`, UI formatting in `src/ui/embeds.js`, and pure formatting helpers in `src/utils/format.js`.
+**Architecture:** Create a CommonJS Node.js app where slash command files parse Discord interactions and delegate playback state to `MusicManager`/`GuildPlayer`. Keep YouTube behavior isolated in `src/music/youtube.js`, consistent response formatting in `src/ui/embeds.js`, and lifecycle/error handling inside the music layer so commands stay thin.
 
 **Tech Stack:** Node.js 20+, discord.js v14, @discordjs/voice, play-dl, dotenv, node:test, Docker.
 
@@ -17,24 +17,20 @@
 - Create `.env.example` — document required Discord env vars and optional YouTube cookie.
 - Create `Dockerfile` — production container using Node 20 Alpine with ffmpeg and python3.
 - Create `src/config.js` — load `.env`, validate required values, expose normalized config.
-- Create `src/utils/format.js` — `formatDuration(seconds)` and `truncate(text, maxLength)` pure helpers.
-- Create `test/utils/format.test.js` — unit tests for formatting helpers.
+- Create `src/utils/format.js` — pure formatting helpers.
+- Create `src/utils/logger.js` — spec-compliant `[ArseneBot]` console logging.
+- Create `src/music/errors.js` — user-facing music error classes and classifiers.
 - Create `src/music/Track.js` — normalize track objects returned from YouTube resolution.
-- Create `src/music/youtube.js` — wrap `play-dl` URL/search/playlist resolution and streaming.
-- Create `test/music/youtube.test.js` — unit tests with a fake `play-dl` module injected via factory.
-- Create `src/music/GuildPlayer.js` — per-guild playback state, queue operations, loop behavior, audio resources, auto-leave timer.
-- Create `test/music/GuildPlayer.test.js` — unit tests with fake audio player/voice connection.
-- Create `src/music/MusicManager.js` — `Map<guildId, GuildPlayer>` lifecycle wrapper.
+- Create `src/music/youtube.js` — wrap `play-dl` query resolution, retry once after 500ms, stream creation, and cookie setup.
+- Create `src/music/GuildPlayer.js` — per-guild playback state, queue operations, loop behavior, volume, seek, audio errors, and idle timer.
+- Create `src/music/MusicManager.js` — `Map<guildId, GuildPlayer>` lifecycle wrapper and voice connection cleanup.
 - Create `src/ui/embeds.js` — consistent Discord embeds for success, error, queue, now playing.
-- Create `src/bot/client.js` — Discord client factory with required intents.
-- Create `src/bot/commandLoader.js` — load command modules from `src/commands`.
-- Create `src/bot/eventLoader.js` — load event modules from `src/events`.
-- Create `src/events/ready.js` — log ready state.
-- Create `src/events/interactionCreate.js` — slash command dispatcher and catch-all interaction error handling.
-- Create `src/events/voiceStateUpdate.js` — trigger/clear empty-channel auto-leave checks.
+- Create `src/bot/client.js`, `src/bot/commandLoader.js`, `src/bot/eventLoader.js` — Discord client and module loaders.
+- Create `src/events/ready.js`, `src/events/interactionCreate.js`, `src/events/voiceStateUpdate.js` — event handlers.
 - Create command files under `src/commands/*.js` — one slash command per spec.
 - Create `src/index.js` — app entry point, config, YouTube token init, client login.
 - Create `scripts/deploy-commands.js` — register guild/global slash commands.
+- Create tests under `test/**` for pure helpers, YouTube dispatch/retry/errors, GuildPlayer state/lifecycle, MusicManager connection cleanup, and voice auto-leave.
 - Modify `README.md` — setup, commands, deploy, and manual test checklist.
 
 ---
@@ -89,8 +85,11 @@ node_modules
 ```dotenv
 DISCORD_TOKEN=
 DISCORD_CLIENT_ID=
+# Optional for dev: guild commands register instantly when set.
 DISCORD_GUILD_ID=
+# Optional: browser cookie string used when YouTube asks for sign-in confirmation.
 YOUTUBE_COOKIE=
+# info | warn | error
 LOG_LEVEL=info
 ```
 
@@ -127,11 +126,12 @@ git commit -m "chore: scaffold Node music bot project"
 
 ---
 
-### Task 2: Configuration and Formatting Helpers
+### Task 2: Configuration, Logger, and Formatting Helpers
 
 **Files:**
 - Create: `src/config.js`
 - Create: `src/utils/format.js`
+- Create: `src/utils/logger.js`
 - Create: `test/utils/format.test.js`
 
 - [ ] **Step 1: Write failing formatting tests**
@@ -231,17 +231,41 @@ function loadConfig() {
 module.exports = { loadConfig };
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 5: Implement logger**
+
+Create `src/utils/logger.js`:
+
+```js
+function formatPrefix(level, guildId = '-') {
+  return `[ArseneBot] [${new Date().toISOString()}] [${level}] [guild:${guildId}]`;
+}
+
+function info(guildId, message, ...args) {
+  console.log(formatPrefix('INFO', guildId), message, ...args);
+}
+
+function warn(guildId, message, ...args) {
+  console.warn(formatPrefix('WARN', guildId), message, ...args);
+}
+
+function error(guildId, message, ...args) {
+  console.error(formatPrefix('ERROR', guildId), message, ...args);
+}
+
+module.exports = { info, warn, error };
+```
+
+- [ ] **Step 6: Run tests**
 
 Run: `npm test -- test/utils/format.test.js`
 
 Expected: PASS, 3 tests pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/config.js src/utils/format.js test/utils/format.test.js
-git commit -m "feat: add config and formatting helpers"
+git add src/config.js src/utils/format.js src/utils/logger.js test/utils/format.test.js
+git commit -m "feat: add config logging and formatting helpers"
 ```
 
 ---
@@ -249,6 +273,7 @@ git commit -m "feat: add config and formatting helpers"
 ### Task 3: Track Model and YouTube Resolver
 
 **Files:**
+- Create: `src/music/errors.js`
 - Create: `src/music/Track.js`
 - Create: `src/music/youtube.js`
 - Create: `test/music/youtube.test.js`
@@ -262,6 +287,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createYoutubeService } = require('../../src/music/youtube');
+const { UserFacingMusicError } = require('../../src/music/errors');
 
 test('resolveQuery resolves video URLs into one track', async () => {
   const calls = [];
@@ -272,7 +298,7 @@ test('resolveQuery resolves video URLs into one track', async () => {
       return { video_details: { title: 'Song', url, durationInSec: 90, thumbnails: [{ url: 'thumb' }] } };
     },
   };
-  const service = createYoutubeService(play);
+  const service = createYoutubeService(play, { retryDelayMs: 0 });
 
   const tracks = await service.resolveQuery('https://youtube.test/watch?v=1', { id: 'u1', username: 'User' });
 
@@ -293,7 +319,7 @@ test('resolveQuery resolves playlists into tracks', async () => {
       ],
     }),
   };
-  const service = createYoutubeService(play);
+  const service = createYoutubeService(play, { retryDelayMs: 0 });
 
   const tracks = await service.resolveQuery('playlist-url', { id: 'u1' });
 
@@ -310,12 +336,45 @@ test('resolveQuery searches keyword queries', async () => {
       return [{ title: 'Lofi', url: 'url', durationInSec: 30, thumbnails: [] }];
     },
   };
-  const service = createYoutubeService(play);
+  const service = createYoutubeService(play, { retryDelayMs: 0 });
 
   const tracks = await service.resolveQuery('lofi beats', { id: 'u1' });
 
   assert.equal(tracks.length, 1);
   assert.equal(tracks[0].title, 'Lofi');
+});
+
+test('resolveQuery retries one transient failure', async () => {
+  let attempts = 0;
+  const play = {
+    validate: async () => 'video',
+    video_basic_info: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('network timeout');
+      return { video_details: { title: 'Retry Song', url: 'url', durationInSec: 10, thumbnails: [] } };
+    },
+  };
+  const service = createYoutubeService(play, { retryDelayMs: 0 });
+
+  const tracks = await service.resolveQuery('url', { id: 'u1' });
+
+  assert.equal(attempts, 2);
+  assert.equal(tracks[0].title, 'Retry Song');
+});
+
+test('resolveQuery maps YouTube sign-in errors to cookie guidance', async () => {
+  const play = {
+    validate: async () => 'video',
+    video_basic_info: async () => {
+      throw new Error('Sign in to confirm your age');
+    },
+  };
+  const service = createYoutubeService(play, { retryDelayMs: 0 });
+
+  await assert.rejects(
+    () => service.resolveQuery('url', { id: 'u1' }),
+    (error) => error instanceof UserFacingMusicError && error.message.includes('YOUTUBE_COOKIE'),
+  );
 });
 ```
 
@@ -325,7 +384,38 @@ Run: `npm test -- test/music/youtube.test.js`
 
 Expected: FAIL with `Cannot find module '../../src/music/youtube'`.
 
-- [ ] **Step 3: Implement `Track` factory**
+- [ ] **Step 3: Implement music errors**
+
+Create `src/music/errors.js`:
+
+```js
+class UserFacingMusicError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = 'UserFacingMusicError';
+    this.cause = cause;
+  }
+}
+
+function classifyYoutubeError(error) {
+  const message = String(error?.message || error || '');
+  const lower = message.toLowerCase();
+
+  if (lower.includes('sign in') || lower.includes('confirm your age') || lower.includes('cookie')) {
+    return new UserFacingMusicError('YouTube yêu cầu xác thực. Admin cần cập nhật YOUTUBE_COOKIE rồi restart bot.', error);
+  }
+
+  if (lower.includes('private') || lower.includes('unavailable') || lower.includes('deleted') || lower.includes('geo')) {
+    return new UserFacingMusicError('Track không khả dụng hoặc bị giới hạn khu vực/riêng tư.', error);
+  }
+
+  return new UserFacingMusicError('Không thể tải dữ liệu từ YouTube. Vui lòng thử lại sau.', error);
+}
+
+module.exports = { UserFacingMusicError, classifyYoutubeError };
+```
+
+- [ ] **Step 4: Implement `Track` factory**
 
 Create `src/music/Track.js`:
 
@@ -343,16 +433,34 @@ function createTrack(details, requestedBy) {
 module.exports = { createTrack };
 ```
 
-- [ ] **Step 4: Implement YouTube service**
+- [ ] **Step 5: Implement YouTube service with retry and classification**
 
 Create `src/music/youtube.js`:
 
 ```js
 const play = require('play-dl');
 const { createTrack } = require('./Track');
+const { classifyYoutubeError } = require('./errors');
 
-function createYoutubeService(playClient = play) {
-  async function resolveQuery(query, requestedBy) {
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createYoutubeService(playClient = play, { retryDelayMs = 500 } = {}) {
+  async function withRetry(operation) {
+    try {
+      return await operation();
+    } catch (firstError) {
+      await delay(retryDelayMs);
+      try {
+        return await operation();
+      } catch (secondError) {
+        throw classifyYoutubeError(secondError);
+      }
+    }
+  }
+
+  async function resolveOnce(query, requestedBy) {
     const validation = await playClient.validate(query);
 
     if (validation === 'video') {
@@ -370,8 +478,16 @@ function createYoutubeService(playClient = play) {
     return results.map((video) => createTrack(video, requestedBy));
   }
 
+  async function resolveQuery(query, requestedBy) {
+    return withRetry(() => resolveOnce(query, requestedBy));
+  }
+
   async function createStream(track, seekSeconds = 0) {
-    return playClient.stream(track.url, { seek: seekSeconds });
+    try {
+      return await playClient.stream(track.url, { seek: seekSeconds });
+    } catch (error) {
+      throw classifyYoutubeError(error);
+    }
   }
 
   function setYoutubeCookie(cookie) {
@@ -384,22 +500,22 @@ function createYoutubeService(playClient = play) {
 module.exports = { createYoutubeService };
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 6: Run tests**
 
 Run: `npm test -- test/music/youtube.test.js`
 
-Expected: PASS, 3 tests pass.
+Expected: PASS, 5 tests pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/music/Track.js src/music/youtube.js test/music/youtube.test.js
-git commit -m "feat: add YouTube track resolver"
+git add src/music/errors.js src/music/Track.js src/music/youtube.js test/music/youtube.test.js
+git commit -m "feat: add YouTube resolver with retry"
 ```
 
 ---
 
-### Task 4: GuildPlayer Queue, Loop, and Playback State
+### Task 4: GuildPlayer Queue, Loop, Volume, Seek, and Audio Error State
 
 **Files:**
 - Create: `src/music/GuildPlayer.js`
@@ -416,8 +532,8 @@ const { EventEmitter } = require('node:events');
 
 const { GuildPlayer } = require('../../src/music/GuildPlayer');
 
-function track(title) {
-  return { title, url: `https://example.test/${title}`, duration: 60, requestedBy: { id: 'u1' }, thumbnail: null };
+function track(title, duration = 60) {
+  return { title, url: `https://example.test/${title}`, duration, requestedBy: { id: 'u1' }, thumbnail: null };
 }
 
 function createFakeAudioPlayer() {
@@ -434,6 +550,7 @@ function createFakeAudioPlayer() {
 
 function createPlayer(overrides = {}) {
   const audioPlayer = createFakeAudioPlayer();
+  const resources = [];
   const youtube = {
     createStream: async (current, seekSeconds = 0) => ({ stream: { current, seekSeconds }, type: 'opus' }),
   };
@@ -445,13 +562,19 @@ function createPlayer(overrides = {}) {
     audioPlayer,
     voiceConnection,
     youtube,
-    createAudioResource: (stream, options) => ({ stream, options }),
-    setTimeoutFn: () => 'timer',
-    clearTimeoutFn: () => {},
+    createAudioResource: (stream, options) => {
+      const resource = { stream, options, volumeValue: null, volume: { setVolume(value) { resource.volumeValue = value; } } };
+      resources.push(resource);
+      return resource;
+    },
+    setTimeoutFn: (fn, ms) => ({ fn, ms }),
+    clearTimeoutFn: (timer) => { timer.cleared = true; },
+    notify: async () => {},
+    log: { info() {}, warn() {}, error() {} },
     onDestroy: () => {},
     ...overrides,
   });
-  return { player, audioPlayer, voiceConnection };
+  return { player, audioPlayer, voiceConnection, resources };
 }
 
 test('enqueue starts first track and queues the rest', async () => {
@@ -465,15 +588,16 @@ test('enqueue starts first track and queues the rest', async () => {
   assert.equal(audioPlayer.played.length, 1);
 });
 
-test('idle with loop off moves current to history and plays next', async () => {
-  const { player } = createPlayer();
-  await player.enqueue([track('one'), track('two')]);
+test('idle event advances exactly once', async () => {
+  const { player, audioPlayer } = createPlayer();
+  await player.enqueue([track('one'), track('two'), track('three')]);
 
-  await player.handleIdle();
+  audioPlayer.emit('idle');
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(player.history.map((item) => item.title), ['one']);
   assert.equal(player.current.title, 'two');
-  assert.deepEqual(player.queue, []);
+  assert.deepEqual(player.queue.map((item) => item.title), ['three']);
 });
 
 test('idle with loop queue rotates current to queue tail', async () => {
@@ -487,13 +611,24 @@ test('idle with loop queue rotates current to queue tail', async () => {
   assert.deepEqual(player.queue.map((item) => item.title), ['one']);
 });
 
-test('skip stops the audio player', async () => {
-  const { player, audioPlayer } = createPlayer();
+test('setVolume updates current audio resource immediately', async () => {
+  const { player, resources } = createPlayer();
   await player.enqueue([track('one')]);
 
-  player.skip();
+  player.setVolume(150);
 
-  assert.equal(audioPlayer.stopped, 1);
+  assert.equal(player.volume, 150);
+  assert.equal(resources[0].volumeValue, 1.5);
+});
+
+test('seek rejects unknown duration and out-of-range positions', async () => {
+  const { player } = createPlayer();
+  await player.enqueue([track('live', null)]);
+
+  await assert.rejects(() => player.seek(5), /không hỗ trợ seek/);
+
+  player.current = track('short', 10);
+  await assert.rejects(() => player.seek(11), /vượt quá thời lượng/);
 });
 
 test('remove uses one-based queue index', async () => {
@@ -504,6 +639,34 @@ test('remove uses one-based queue index', async () => {
 
   assert.equal(removed.title, 'three');
   assert.deepEqual(player.queue.map((item) => item.title), ['two']);
+});
+
+test('empty queue starts idle timer and enqueue clears it', async () => {
+  let clearCount = 0;
+  const { player } = createPlayer({ clearTimeoutFn: () => { clearCount += 1; } });
+  await player.enqueue([track('one')]);
+
+  await player.handleIdle();
+
+  assert.equal(player.current, null);
+  assert.equal(player.idleTimer.ms, 5 * 60 * 1000);
+
+  await player.enqueue([track('two')]);
+
+  assert.equal(clearCount, 1);
+  assert.equal(player.idleTimer, null);
+});
+
+test('audio error notifies and advances to next track', async () => {
+  const messages = [];
+  const { player, audioPlayer } = createPlayer({ notify: async (message) => messages.push(message) });
+  await player.enqueue([track('one'), track('two')]);
+
+  audioPlayer.emit('error', new Error('stream died'));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(player.current.title, 'two');
+  assert.equal(messages.length, 1);
 });
 ```
 
@@ -520,6 +683,7 @@ Create `src/music/GuildPlayer.js`:
 ```js
 const { EventEmitter } = require('node:events');
 const { AudioPlayerStatus, createAudioResource, StreamType } = require('@discordjs/voice');
+const { UserFacingMusicError } = require('./errors');
 
 class GuildPlayer extends EventEmitter {
   constructor({
@@ -532,6 +696,8 @@ class GuildPlayer extends EventEmitter {
     createAudioResource: createResource = createAudioResource,
     setTimeoutFn = setTimeout,
     clearTimeoutFn = clearTimeout,
+    notify = async () => {},
+    log = console,
     onDestroy,
   }) {
     super();
@@ -544,6 +710,8 @@ class GuildPlayer extends EventEmitter {
     this.createAudioResource = createResource;
     this.setTimeoutFn = setTimeoutFn;
     this.clearTimeoutFn = clearTimeoutFn;
+    this.notify = notify;
+    this.log = log;
     this.onDestroy = onDestroy;
     this.queue = [];
     this.current = null;
@@ -552,16 +720,16 @@ class GuildPlayer extends EventEmitter {
     this.volume = 100;
     this.paused = false;
     this.idleTimer = null;
+    this.currentResource = null;
     this.isLoading = false;
     this.pendingSkip = false;
 
     this.audioPlayer.on(AudioPlayerStatus.Idle, () => {
       this.handleIdle().catch((error) => this.emit('error', error));
     });
-    this.audioPlayer.on('idle', () => {
-      this.handleIdle().catch((error) => this.emit('error', error));
+    this.audioPlayer.on('error', (error) => {
+      this.handleAudioError(error).catch((handlerError) => this.emit('error', handlerError));
     });
-    this.audioPlayer.on('error', (error) => this.emit('trackError', error));
   }
 
   async enqueue(tracks) {
@@ -581,14 +749,18 @@ class GuildPlayer extends EventEmitter {
   async playCurrent(seekSeconds = 0) {
     if (!this.current) return;
     this.isLoading = true;
-    const stream = await this.youtube.createStream(this.current, seekSeconds);
-    const resource = this.createAudioResource(stream.stream, {
-      inputType: stream.type || StreamType.Arbitrary,
-      inlineVolume: true,
-    });
-    resource.volume?.setVolume(this.volume / 100);
-    this.isLoading = false;
-    this.audioPlayer.play(resource);
+    try {
+      const stream = await this.youtube.createStream(this.current, seekSeconds);
+      const resource = this.createAudioResource(stream.stream, {
+        inputType: stream.type || StreamType.Arbitrary,
+        inlineVolume: true,
+      });
+      this.currentResource = resource;
+      resource.volume?.setVolume(this.volume / 100);
+      this.audioPlayer.play(resource);
+    } finally {
+      this.isLoading = false;
+    }
 
     if (this.pendingSkip) {
       this.pendingSkip = false;
@@ -613,6 +785,18 @@ class GuildPlayer extends EventEmitter {
 
     this.current = this.queue.shift() || null;
     if (this.current) await this.playCurrent();
+    else startIdleTimerSafe(this);
+  }
+
+  async handleAudioError(error) {
+    const failedTrack = this.current;
+    this.log.error(this.guildId, 'Audio player error', error);
+    if (failedTrack) {
+      await this.notify(`Không thể phát **${failedTrack.title}**, đang bỏ qua bài này.`);
+      this.history.push(failedTrack);
+    }
+    this.current = this.queue.shift() || null;
+    if (this.current) await this.playCurrent();
     else this.startIdleTimer();
   }
 
@@ -627,6 +811,7 @@ class GuildPlayer extends EventEmitter {
   stop() {
     this.queue = [];
     this.current = null;
+    this.currentResource = null;
     this.audioPlayer.stop();
     this.startIdleTimer();
   }
@@ -645,6 +830,7 @@ class GuildPlayer extends EventEmitter {
 
   setVolume(volume) {
     this.volume = Math.max(0, Math.min(200, volume));
+    this.currentResource?.volume?.setVolume(this.volume / 100);
   }
 
   setLoopMode(loopMode) {
@@ -659,6 +845,9 @@ class GuildPlayer extends EventEmitter {
   }
 
   async seek(seconds) {
+    if (!this.current) throw new UserFacingMusicError('Không có bài nào đang phát.');
+    if (!Number.isFinite(this.current.duration)) throw new UserFacingMusicError('Bài này không hỗ trợ seek vì không có thời lượng xác định.');
+    if (seconds > this.current.duration) throw new UserFacingMusicError('Vị trí seek vượt quá thời lượng bài hát.');
     await this.playCurrent(seconds);
   }
 
@@ -683,9 +872,14 @@ class GuildPlayer extends EventEmitter {
     this.clearIdleTimer();
     this.queue = [];
     this.current = null;
-    this.voiceConnection.destroy();
+    this.currentResource = null;
+    if (this.voiceConnection.state?.status !== 'destroyed') this.voiceConnection.destroy();
     this.onDestroy?.(this.guildId);
   }
+}
+
+function startIdleTimerSafe(player) {
+  player.startIdleTimer();
 }
 
 module.exports = { GuildPlayer };
@@ -695,7 +889,7 @@ module.exports = { GuildPlayer };
 
 Run: `npm test -- test/music/GuildPlayer.test.js`
 
-Expected: PASS, 5 tests pass.
+Expected: PASS, 8 tests pass.
 
 - [ ] **Step 5: Commit**
 
@@ -706,23 +900,75 @@ git commit -m "feat: add guild music player state"
 
 ---
 
-### Task 5: MusicManager and Embed UI
+### Task 5: MusicManager, Voice Cleanup, and Embed UI
 
 **Files:**
 - Create: `src/music/MusicManager.js`
 - Create: `src/ui/embeds.js`
+- Create: `test/music/MusicManager.test.js`
 
-- [ ] **Step 1: Create `MusicManager`**
+- [ ] **Step 1: Write failing MusicManager cleanup test**
+
+Create `test/music/MusicManager.test.js`:
+
+```js
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+
+const { MusicManager } = require('../../src/music/MusicManager');
+
+test('voice connection disconnected state removes player', () => {
+  const connection = new EventEmitter();
+  connection.subscribe = () => {};
+  connection.destroy = () => { connection.destroyed = true; };
+  connection.state = { status: 'ready' };
+  const manager = new MusicManager({
+    youtube: {},
+    joinVoiceChannel: () => connection,
+    createAudioPlayer: () => {
+      const audioPlayer = new EventEmitter();
+      audioPlayer.on = audioPlayer.on.bind(audioPlayer);
+      return audioPlayer;
+    },
+    notify: async () => {},
+    log: { info() {}, warn() {}, error() {} },
+  });
+
+  manager.getOrCreate({
+    guild: { id: 'g1', voiceAdapterCreator: {} },
+    voiceChannel: { id: 'v1' },
+    textChannelId: 't1',
+  });
+
+  connection.emit('stateChange', { status: 'ready' }, { status: 'disconnected' });
+
+  assert.equal(manager.get('g1'), null);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npm test -- test/music/MusicManager.test.js`
+
+Expected: FAIL with `Cannot find module '../../src/music/MusicManager'`.
+
+- [ ] **Step 3: Create `MusicManager` with connection cleanup**
 
 Create `src/music/MusicManager.js`:
 
 ```js
-const { createAudioPlayer, joinVoiceChannel } = require('@discordjs/voice');
+const voice = require('@discordjs/voice');
 const { GuildPlayer } = require('./GuildPlayer');
 
 class MusicManager {
-  constructor({ youtube }) {
+  constructor({ youtube, client = null, joinVoiceChannel = voice.joinVoiceChannel, createAudioPlayer = voice.createAudioPlayer, notify, log = console }) {
     this.youtube = youtube;
+    this.client = client;
+    this.joinVoiceChannel = joinVoiceChannel;
+    this.createAudioPlayer = createAudioPlayer;
+    this.notify = notify;
+    this.log = log;
     this.players = new Map();
   }
 
@@ -734,17 +980,19 @@ class MusicManager {
     const existing = this.get(guild.id);
     if (existing) {
       if (existing.voiceChannelId !== voiceChannel.id) {
-        throw new Error('Bot đang phát ở channel khác.');
+        const error = new Error('Bot đang phát ở channel khác.');
+        error.code = 'PLAYER_IN_DIFFERENT_CHANNEL';
+        throw error;
       }
       return existing;
     }
 
-    const connection = joinVoiceChannel({
+    const connection = this.joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
     });
-    const audioPlayer = createAudioPlayer();
+    const audioPlayer = this.createAudioPlayer();
     connection.subscribe(audioPlayer);
 
     const player = new GuildPlayer({
@@ -754,11 +1002,29 @@ class MusicManager {
       audioPlayer,
       voiceConnection: connection,
       youtube: this.youtube,
+      notify: this.notify || ((message) => this.notifyTextChannel(textChannelId, message)),
+      log: this.log,
       onDestroy: (guildId) => this.players.delete(guildId),
+    });
+
+    connection.on('stateChange', (oldState, newState) => {
+      if (newState.status === 'disconnected' || newState.status === 'destroyed') {
+        this.players.delete(guild.id);
+        this.log.warn(guild.id, 'Voice connection disconnected; cleaned up player.');
+      }
+    });
+    connection.on('error', (error) => {
+      this.log.error(guild.id, 'Voice connection error', error);
+      this.destroy(guild.id);
     });
 
     this.players.set(guild.id, player);
     return player;
+  }
+
+  async notifyTextChannel(textChannelId, message) {
+    const channel = await this.client?.channels.fetch(textChannelId).catch(() => null);
+    if (channel?.isTextBased()) await channel.send(message);
   }
 
   destroy(guildId) {
@@ -773,7 +1039,7 @@ class MusicManager {
 module.exports = { MusicManager };
 ```
 
-- [ ] **Step 2: Create embed helpers**
+- [ ] **Step 4: Create embed helpers**
 
 Create `src/ui/embeds.js`:
 
@@ -816,17 +1082,17 @@ function queueEmbed(player) {
 module.exports = { successEmbed, errorEmbed, nowPlayingEmbed, queueEmbed };
 ```
 
-- [ ] **Step 3: Run full tests**
+- [ ] **Step 5: Run tests**
 
-Run: `npm test`
+Run: `npm test -- test/music/MusicManager.test.js`
 
-Expected: PASS for all existing tests.
+Expected: PASS, 1 test passes.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/music/MusicManager.js src/ui/embeds.js
-git commit -m "feat: add music manager and embeds"
+git add src/music/MusicManager.js src/ui/embeds.js test/music/MusicManager.test.js
+git commit -m "feat: add music manager lifecycle"
 ```
 
 ---
@@ -841,8 +1107,54 @@ git commit -m "feat: add music manager and embeds"
 - Create: `src/events/interactionCreate.js`
 - Create: `src/events/voiceStateUpdate.js`
 - Create: `src/index.js`
+- Create: `test/events/voiceStateUpdate.test.js`
 
-- [ ] **Step 1: Create Discord client factory**
+- [ ] **Step 1: Write failing voice state auto-leave tests**
+
+Create `test/events/voiceStateUpdate.test.js`:
+
+```js
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const event = require('../../src/events/voiceStateUpdate');
+
+function members(items) {
+  return {
+    filter(fn) {
+      return { size: items.filter(fn).length };
+    },
+  };
+}
+
+test('voiceStateUpdate starts idle timer when no humans remain', () => {
+  let started = false;
+  const player = { voiceChannelId: 'v1', startIdleTimer: () => { started = true; }, clearIdleTimer: () => {} };
+  const guild = { id: 'g1', channels: { cache: new Map([['v1', { members: members([{ user: { bot: true } }]) }]]) } };
+
+  event.execute({ guild }, {}, { musicManager: { get: () => player } });
+
+  assert.equal(started, true);
+});
+
+test('voiceStateUpdate clears idle timer when a human is present', () => {
+  let cleared = false;
+  const player = { voiceChannelId: 'v1', startIdleTimer: () => {}, clearIdleTimer: () => { cleared = true; } };
+  const guild = { id: 'g1', channels: { cache: new Map([['v1', { members: members([{ user: { bot: false } }]) }]]) } };
+
+  event.execute({ guild }, {}, { musicManager: { get: () => player } });
+
+  assert.equal(cleared, true);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npm test -- test/events/voiceStateUpdate.test.js`
+
+Expected: FAIL with `Cannot find module '../../src/events/voiceStateUpdate'`.
+
+- [ ] **Step 3: Create Discord client factory**
 
 Create `src/bot/client.js`:
 
@@ -861,7 +1173,7 @@ function createClient() {
 module.exports = { createClient };
 ```
 
-- [ ] **Step 2: Create command loader**
+- [ ] **Step 4: Create command loader**
 
 Create `src/bot/commandLoader.js`:
 
@@ -885,7 +1197,7 @@ function loadCommands(client, commandsPath = path.join(__dirname, '..', 'command
 module.exports = { loadCommands };
 ```
 
-- [ ] **Step 3: Create event loader**
+- [ ] **Step 5: Create event loader**
 
 Create `src/bot/eventLoader.js`:
 
@@ -907,7 +1219,7 @@ function loadEvents(client, context, eventsPath = path.join(__dirname, '..', 'ev
 module.exports = { loadEvents };
 ```
 
-- [ ] **Step 4: Create ready event**
+- [ ] **Step 6: Create ready event**
 
 Create `src/events/ready.js`:
 
@@ -917,19 +1229,20 @@ const { Events } = require('discord.js');
 module.exports = {
   name: Events.ClientReady,
   once: true,
-  execute(client) {
-    console.log(`[${new Date().toISOString()}] [INFO] [guild:-] Ready as ${client.user.tag}`);
+  execute(client, { log }) {
+    log.info('-', `Ready as ${client.user.tag}`);
   },
 };
 ```
 
-- [ ] **Step 5: Create interaction dispatcher**
+- [ ] **Step 7: Create interaction dispatcher**
 
 Create `src/events/interactionCreate.js`:
 
 ```js
 const { Events } = require('discord.js');
 const { errorEmbed } = require('../ui/embeds');
+const { UserFacingMusicError } = require('../music/errors');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -942,8 +1255,9 @@ module.exports = {
     try {
       await command.execute(interaction, context);
     } catch (error) {
-      console.error(`[${new Date().toISOString()}] [ERROR] [guild:${interaction.guildId}]`, error);
-      const payload = { embeds: [errorEmbed('Có lỗi xảy ra, đã ghi log.')], ephemeral: true };
+      context.log.error(interaction.guildId, 'Interaction error', error);
+      const message = error instanceof UserFacingMusicError ? error.message : 'Có lỗi xảy ra, đã ghi log.';
+      const payload = { embeds: [errorEmbed(message)], ephemeral: true };
       if (interaction.deferred || interaction.replied) await interaction.editReply(payload);
       else await interaction.reply(payload);
     }
@@ -951,7 +1265,7 @@ module.exports = {
 };
 ```
 
-- [ ] **Step 6: Create voice state auto-leave event**
+- [ ] **Step 8: Create voice state auto-leave event**
 
 Create `src/events/voiceStateUpdate.js`:
 
@@ -975,7 +1289,7 @@ module.exports = {
 };
 ```
 
-- [ ] **Step 7: Create app entry point**
+- [ ] **Step 9: Create app entry point**
 
 Create `src/index.js`:
 
@@ -986,38 +1300,39 @@ const { loadCommands } = require('./bot/commandLoader');
 const { loadEvents } = require('./bot/eventLoader');
 const { createYoutubeService } = require('./music/youtube');
 const { MusicManager } = require('./music/MusicManager');
+const log = require('./utils/logger');
 
 process.on('unhandledRejection', (error) => {
-  console.error(`[${new Date().toISOString()}] [ERROR] [guild:-] Unhandled rejection`, error);
+  log.error('-', 'Unhandled rejection', error);
 });
 
 process.on('uncaughtException', (error) => {
-  console.error(`[${new Date().toISOString()}] [ERROR] [guild:-] Uncaught exception`, error);
+  log.error('-', 'Uncaught exception', error);
 });
 
 const config = loadConfig();
 const youtube = createYoutubeService();
 youtube.setYoutubeCookie(config.youtubeCookie);
 
-const musicManager = new MusicManager({ youtube });
 const client = createClient();
+const musicManager = new MusicManager({ youtube, client, log });
 
 loadCommands(client);
-loadEvents(client, { config, youtube, musicManager });
+loadEvents(client, { config, youtube, musicManager, log });
 
 client.login(config.discordToken);
 ```
 
-- [ ] **Step 8: Run tests**
+- [ ] **Step 10: Run tests**
 
-Run: `npm test`
+Run: `npm test -- test/events/voiceStateUpdate.test.js`
 
-Expected: PASS for all existing tests.
+Expected: PASS, 2 tests pass.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add src/bot src/events src/index.js
+git add src/bot src/events src/index.js test/events/voiceStateUpdate.test.js
 git commit -m "feat: add Discord client lifecycle"
 ```
 
@@ -1045,7 +1360,7 @@ git commit -m "feat: add Discord client lifecycle"
 Create `src/commands/play.js`:
 
 ```js
-const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, PermissionsBitField } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 
 module.exports = {
@@ -1053,7 +1368,7 @@ module.exports = {
     .setName('play')
     .setDescription('Phát nhạc từ YouTube URL, playlist, hoặc từ khóa.')
     .addStringOption((option) => option.setName('query').setDescription('URL hoặc từ khóa YouTube').setRequired(true)),
-  async execute(interaction, { youtube, musicManager }) {
+  async execute(interaction, { youtube, musicManager, log }) {
     await interaction.deferReply();
     const query = interaction.options.getString('query', true);
     const voiceChannel = interaction.member.voice.channel;
@@ -1064,11 +1379,12 @@ module.exports = {
     }
 
     const permissions = voiceChannel.permissionsFor(interaction.guild.members.me);
-    if (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak)) {
+    if (!permissions.has(PermissionsBitField.Flags.Connect) || !permissions.has(PermissionsBitField.Flags.Speak)) {
       await interaction.editReply({ embeds: [errorEmbed('Bot cần quyền Join và Speak trong voice channel này.')] });
       return;
     }
 
+    log.info(interaction.guildId, `User ${interaction.user.id} requested play: ${query}`);
     const tracks = await youtube.resolveQuery(query, {
       id: interaction.user.id,
       username: interaction.user.username,
@@ -1078,7 +1394,17 @@ module.exports = {
       return;
     }
 
-    const player = musicManager.getOrCreate({ guild: interaction.guild, voiceChannel, textChannelId: interaction.channelId });
+    let player;
+    try {
+      player = musicManager.getOrCreate({ guild: interaction.guild, voiceChannel, textChannelId: interaction.channelId });
+    } catch (error) {
+      if (error.code === 'PLAYER_IN_DIFFERENT_CHANNEL') {
+        await interaction.editReply({ embeds: [errorEmbed('Bot đang phát ở channel khác.')] });
+        return;
+      }
+      throw error;
+    }
+
     const result = await player.enqueue(tracks);
     const message = result.started
       ? `Đang phát: **${tracks[0].title}**`
@@ -1090,9 +1416,10 @@ module.exports = {
 
 - [ ] **Step 2: Create playback control commands**
 
-Create `src/commands/skip.js`:
+Create `src/commands/skip.js`, `stop.js`, `pause.js`, and `resume.js` exactly as below:
 
 ```js
+// src/commands/skip.js
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1107,9 +1434,8 @@ module.exports = {
 };
 ```
 
-Create `src/commands/stop.js`:
-
 ```js
+// src/commands/stop.js
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1124,9 +1450,8 @@ module.exports = {
 };
 ```
 
-Create `src/commands/pause.js`:
-
 ```js
+// src/commands/pause.js
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1141,9 +1466,8 @@ module.exports = {
 };
 ```
 
-Create `src/commands/resume.js`:
-
 ```js
+// src/commands/resume.js
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1160,9 +1484,10 @@ module.exports = {
 
 - [ ] **Step 3: Create display commands**
 
-Create `src/commands/queue.js`:
+Create `src/commands/queue.js` and `src/commands/nowplaying.js`:
 
 ```js
+// src/commands/queue.js
 const { SlashCommandBuilder } = require('discord.js');
 const { queueEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1176,9 +1501,8 @@ module.exports = {
 };
 ```
 
-Create `src/commands/nowplaying.js`:
-
 ```js
+// src/commands/nowplaying.js
 const { SlashCommandBuilder } = require('discord.js');
 const { nowPlayingEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1194,9 +1518,10 @@ module.exports = {
 
 - [ ] **Step 4: Create queue mutation commands**
 
-Create `src/commands/volume.js`:
+Create `src/commands/volume.js`, `loop.js`, `shuffle.js`, `seek.js`, and `remove.js`:
 
 ```js
+// src/commands/volume.js
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1215,9 +1540,8 @@ module.exports = {
 };
 ```
 
-Create `src/commands/loop.js`:
-
 ```js
+// src/commands/loop.js
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1240,9 +1564,8 @@ module.exports = {
 };
 ```
 
-Create `src/commands/shuffle.js`:
-
 ```js
+// src/commands/shuffle.js
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1257,11 +1580,11 @@ module.exports = {
 };
 ```
 
-Create `src/commands/seek.js`:
-
 ```js
+// src/commands/seek.js
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
+const { UserFacingMusicError } = require('../music/errors');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -1271,7 +1594,7 @@ module.exports = {
   async execute(interaction, { musicManager }) {
     await interaction.deferReply();
     const player = musicManager.get(interaction.guildId);
-    if (!player?.current) return interaction.editReply({ embeds: [errorEmbed('Không có bài nào đang phát.')] });
+    if (!player?.current) throw new UserFacingMusicError('Không có bài nào đang phát.');
     const seconds = interaction.options.getInteger('seconds', true);
     await player.seek(seconds);
     return interaction.editReply({ embeds: [successEmbed(`Đã tua đến **${seconds}s**.`)] });
@@ -1279,9 +1602,8 @@ module.exports = {
 };
 ```
 
-Create `src/commands/remove.js`:
-
 ```js
+// src/commands/remove.js
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 
@@ -1329,7 +1651,7 @@ Expected: PASS for all existing tests.
 
 ```bash
 git add src/commands
- git commit -m "feat: add music slash commands"
+git commit -m "feat: add music slash commands"
 ```
 
 ---
@@ -1448,12 +1770,16 @@ Use a private Discord test server.
 - [ ] `/play <video URL>` plays the right track.
 - [ ] `/play <playlist URL>` adds the playlist.
 - [ ] `/play <keyword>` plays the first search result.
+- [ ] `/play` while bot is active in another voice channel returns `Bot đang phát ở channel khác.`
+- [ ] YouTube sign-in/cookie errors show the `YOUTUBE_COOKIE` guidance.
 - [ ] `/skip`, `/pause`, `/resume`, and `/stop` work.
 - [ ] `/queue` and `/nowplaying` display correct state.
 - [ ] `/loop track`, `/loop queue`, and `/loop off` work.
 - [ ] `/shuffle`, `/remove <index>`, and `/seek <seconds>` work.
-- [ ] `/volume 50` and `/volume 150` change playback volume.
+- [ ] `/seek` rejects live/unknown-duration tracks and out-of-range seconds.
+- [ ] `/volume 50` and `/volume 150` change volume on the current track.
 - [ ] Bot auto-leaves after 5 minutes when no humans remain in voice.
+- [ ] Bot auto-leaves after 5 minutes when queue is empty and nothing is playing.
 - [ ] Kicking the bot from voice cleans up without crashing.
 ```
 
@@ -1515,10 +1841,12 @@ Skip this commit only if `git status --short` is empty.
 
 ## Self-Review
 
-**Spec coverage:** This plan covers project scaffold, env/config, Docker, command deployment, all 13 slash commands, in-memory guild player state, queue/current separation, loop modes, volume, seek, remove, shuffle, auto-leave timer hooks, YouTube cookie initialization, logging via console, crash handlers, unit tests for pure logic/YouTube dispatch/player state, and README manual checklist.
+**Spec coverage:** This revised plan covers scaffold, env/config, Docker, command deployment, all 13 slash commands, in-memory state, queue/current separation, loop modes, immediate volume changes, seek validation, remove/shuffle, auto-leave timers, voice disconnect cleanup, audio stream error skip/notify behavior, YouTube cookie guidance, one retry with 500ms backoff, `[ArseneBot]` logging, crash handlers, unit tests, and README manual verification.
 
-**Known implementation notes:** The first implementation should keep rate limiting as a later nice-to-have because the spec marks it nice-to-have. Manual Discord testing is required before claiming the bot is complete.
+**Review feedback incorporated:** Removed duplicate idle listener, added voice connection `stateChange`/`error` cleanup, added audio error recovery, made `/play` return the channel-conflict message, added YouTube retry/error classification, made volume update the active resource, added seek validation, added auto-leave tests, switched to `PermissionsBitField.Flags`, fixed the Task 7 commit typo, and added `.env.example` comments.
+
+**Known implementation notes:** The soft rate limit for concurrent `/play` resolves remains out of scope for this plan because the approved spec marks it nice-to-have. Manual Discord testing is required before claiming the bot is complete.
 
 **Placeholder scan:** No `TBD`, `TODO`, `implement later`, or unspecified test steps remain.
 
-**Type consistency:** `Track` uses `{ title, url, duration, requestedBy, thumbnail }`; `GuildPlayer` consistently uses `current`, `queue`, `history`, `loopMode`, `volume`, and command files call the same public methods defined in Task 4.
+**Type consistency:** `Track` uses `{ title, url, duration, requestedBy, thumbnail }`; `GuildPlayer` consistently uses `current`, `queue`, `history`, `loopMode`, `volume`, `currentResource`, and command files call the same public methods defined in Task 4.
