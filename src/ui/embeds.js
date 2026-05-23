@@ -24,13 +24,18 @@ function nowPlayingEmbed(track, player) {
 }
 
 function queueEmbed(player) {
+  const total = player.queue.length;
   const lines = player.queue.slice(0, 10).map((track, index) => (
     `${index + 1}. [${truncate(track.title, 80)}](${track.url}) — ${formatDuration(track.duration)}`
   ));
+  let description = lines.length ? lines.join('\n') : 'Hàng đợi đang trống.';
+  if (total > lines.length) {
+    description += `\n\n...và ${total - lines.length} mục nữa`;
+  }
   return new EmbedBuilder()
     .setColor(0x9b59b6)
-    .setTitle('Hàng đợi')
-    .setDescription(lines.length ? lines.join('\n') : 'Hàng đợi đang trống.');
+    .setTitle(`Hàng đợi (${total})`)
+    .setDescription(description);
 }
 
 module.exports = { successEmbed, errorEmbed, nowPlayingEmbed, queueEmbed };
