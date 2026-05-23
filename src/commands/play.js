@@ -7,7 +7,7 @@ module.exports = {
     .setDescription('Phát nhạc từ YouTube URL, playlist, hoặc từ khóa.')
     .addStringOption((option) => option.setName('query').setDescription('URL hoặc từ khóa YouTube').setRequired(true)),
   async execute(interaction, { youtube, musicManager, log }) {
-    await interaction.deferReply();
+    // deferReply already done in interactionCreate handler
     const query = interaction.options.getString('query', true);
     const voiceChannel = interaction.member.voice.channel;
 
