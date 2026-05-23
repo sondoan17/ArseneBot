@@ -1,4 +1,5 @@
 const { spawn } = require('node:child_process');
+const { StreamType } = require('@discordjs/voice');
 const { createTrack } = require('./Track');
 const { classifyYoutubeError } = require('./errors');
 
@@ -118,7 +119,7 @@ function createYoutubeService({ retryDelayMs = 500 } = {}) {
       const proc = spawn(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
       proc.stderr.on('data', () => {});
 
-      return { stream: proc.stdout, type: 'arbitrary' };
+      return { stream: proc.stdout, type: StreamType.Arbitrary };
     } catch (error) {
       throw classifyYoutubeError(error);
     }
