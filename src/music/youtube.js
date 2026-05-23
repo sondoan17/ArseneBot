@@ -1,9 +1,12 @@
 const { spawn } = require('node:child_process');
+const { existsSync } = require('node:fs');
 const { StreamType } = require('@discordjs/voice');
 const { createTrack } = require('./Track');
 const { classifyYoutubeError } = require('./errors');
 
 const YTDLP_PATH = 'yt-dlp';
+const COOKIES_FILE = '/app/cookies.txt';
+const JS_RUNTIME = 'deno';
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -69,19 +72,29 @@ function parseTracks(output, requestedBy) {
     .filter(Boolean);
 }
 
+function buildBaseArgs() {
+  const args = ['--js-runtime', JS_RUNTIME];
+  if (existsSync(COOKIES_FILE)) {
+    args.push('--cookies', COOKIES_FILE);
+  }
+  return args;
+}
+
 function buildArgs(query) {
+  const args = buildBaseArgs();
   if (isUrl(query)) {
     if (isPlaylistUrl(query)) {
-      return ['--flat-playlist', '--dump-json', query];
+      args.push('--flat-playlist', '--dump-json', query);
+    } else {
+      args.push('--dump-json', query);
     }
-    return ['--dump-json', query];
+  } else {
+    args.push('--dump-json', `ytsearch1:${query}`);
   }
-  return ['--dump-json', `ytsearch1:${query}`];
+  return args;
 }
 
 function createYoutubeService({ retryDelayMs = 500 } = {}) {
-  let ytCookieStr = null;
-
   async function withRetry(operation) {
     try {
       return await operation();
@@ -97,9 +110,6 @@ function createYoutubeService({ retryDelayMs = 500 } = {}) {
 
   async function resolveOnce(query, requestedBy) {
     const args = buildArgs(query);
-    if (ytCookieStr) {
-      args.unshift('--add-header', `Cookie:${ytCookieStr}`);
-    }
     const output = await spawnYtDlp(args);
     return parseTracks(output, requestedBy);
   }
@@ -110,12 +120,7 @@ function createYoutubeService({ retryDelayMs = 500 } = {}) {
 
   async function createStream(track) {
     try {
-      const args = ['-f', 'bestaudio', '-o', '-', '--no-playlist'];
-      if (ytCookieStr) {
-        args.unshift('--add-header', `Cookie:${ytCookieStr}`);
-      }
-      args.push(track.url);
-
+      const args = [...buildBaseArgs(), '-f', 'bestaudio', '-o', '-', '--no-playlist', track.url];
       const proc = spawn(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
       proc.stderr.on('data', () => {});
 
@@ -125,9 +130,9 @@ function createYoutubeService({ retryDelayMs = 500 } = {}) {
     }
   }
 
-  function setYoutubeCookie(cookie) {
-    if (!cookie) return;
-    ytCookieStr = cookie;
+  function setYoutubeCookie(_cookie) {
+    // Cookies are now handled by entrypoint script writing /app/cookies.txt
+    // This method kept for backward compatibility
   }
 
   return { resolveQuery, createStream, setYoutubeCookie };
