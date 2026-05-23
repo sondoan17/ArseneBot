@@ -67,14 +67,20 @@ class GuildPlayer extends EventEmitter {
     if (!this.current) return;
     this.isLoading = true;
     try {
+      this.log.info(this.guildId, `Creating stream for: ${this.current.title}`);
       const stream = await this.youtube.createStream(this.current, seekSeconds);
+      this.log.info(this.guildId, `Stream created, type=${stream.type}, connection state=${this.voiceConnection.state?.status}`);
+
       const resource = this.createAudioResource(stream.stream, {
         inputType: stream.type || StreamType.Arbitrary,
         inlineVolume: true,
       });
       this.currentResource = resource;
       resource.volume?.setVolume(this.volume / 100);
+
+      this.log.info(this.guildId, `Playing resource, player state=${this.audioPlayer.state?.status}`);
       this.audioPlayer.play(resource);
+      this.log.info(this.guildId, `After play(), player state=${this.audioPlayer.state?.status}`);
     } finally {
       this.isLoading = false;
     }
@@ -86,6 +92,7 @@ class GuildPlayer extends EventEmitter {
   }
 
   async handleIdle() {
+    this.log.info(this.guildId, `handleIdle called, current=${this.current?.title}, loop=${this.loopMode}, queue=${this.queue.length}`);
     if (!this.current) {
       this.startIdleTimer();
       return;
