@@ -48,6 +48,7 @@ class MusicManager {
     });
 
     connection.on('stateChange', (oldState, newState) => {
+      this.log.info(guild.id, `Voice state: ${oldState.status} → ${newState.status}`);
       if (newState.status === 'disconnected' || newState.status === 'destroyed') {
         this.players.delete(guild.id);
         this.log.warn(guild.id, 'Voice connection disconnected; cleaned up player.');

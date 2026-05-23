@@ -42,10 +42,18 @@ class GuildPlayer extends EventEmitter {
     this.pendingSkip = false;
 
     this.audioPlayer.on(AudioPlayerStatus.Idle, () => {
+      this.log.info(this.guildId, 'AudioPlayer → idle');
       this.handleIdle().catch((error) => this.emit('error', error));
     });
     this.audioPlayer.on('error', (error) => {
+      this.log.error(this.guildId, 'AudioPlayer error', error);
       this.handleAudioError(error).catch((handlerError) => this.emit('error', handlerError));
+    });
+    this.audioPlayer.on(AudioPlayerStatus.Playing, () => {
+      this.log.info(this.guildId, 'AudioPlayer → playing');
+    });
+    this.audioPlayer.on(AudioPlayerStatus.Buffering, () => {
+      this.log.info(this.guildId, 'AudioPlayer → buffering');
     });
   }
 
