@@ -2,12 +2,6 @@ FROM node:20-alpine
 RUN apk add --no-cache ffmpeg python3
 RUN wget -q https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp
 
-# Install deno as JS runtime for yt-dlp (YouTube bot detection bypass)
-RUN wget -q https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -O /tmp/deno.zip && \
-    unzip -q /tmp/deno.zip -d /usr/local/bin && \
-    rm /tmp/deno.zip && \
-    chmod +x /usr/local/bin/deno
-
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev

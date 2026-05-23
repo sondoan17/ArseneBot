@@ -6,7 +6,7 @@ const { classifyYoutubeError } = require('./errors');
 
 const YTDLP_PATH = 'yt-dlp';
 const COOKIES_FILE = '/app/cookies.txt';
-const JS_RUNTIME = 'deno';
+const JS_RUNTIME = 'node';
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
