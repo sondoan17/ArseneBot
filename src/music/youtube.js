@@ -8,6 +8,13 @@ const YTDLP_PATH = 'yt-dlp';
 const COOKIES_FILE = '/app/cookies.txt';
 const JS_RUNTIME = 'node';
 
+// Public Invidious instances for search (yt-dlp blocked on VPS IPs)
+const INVIDIOUS_INSTANCES = [
+  'https://inv.nadeko.net',
+  'https://invidious.fdn.fr',
+  'https://yewtu.be',
+];
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -18,6 +25,68 @@ function isUrl(query) {
 
 function isPlaylistUrl(query) {
   return /[?&]list=/.test(query);
+}
+
+async function fetchJson(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function searchInvidious(query, requestedBy) {
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      const data = await fetchJson(`${instance}/api/v1/search?q=${encodeURIComponent(query)}&type=video`);
+      const results = (data || []).filter((r) => r.type === 'video').slice(0, 5);
+      if (results.length > 0) {
+        return results.map((video) =>
+          createTrack(
+            {
+              title: video.title || 'Unknown title',
+              url: `https://www.youtube.com/watch?v=${video.videoId}`,
+              durationInSec: video.lengthSeconds || null,
+              thumbnails: video.videoThumbnails?.length ? [{ url: video.videoThumbnails[0].url }] : [],
+            },
+            requestedBy,
+          ),
+        );
+      }
+    } catch {
+      // Try next instance
+    }
+  }
+  return [];
+}
+
+async function resolveInvidious(url, requestedBy) {
+  const videoId = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
+  if (!videoId) return null;
+
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      const data = await fetchJson(`${instance}/api/v1/videos/${videoId}`);
+      return [
+        createTrack(
+          {
+            title: data.title || 'Unknown title',
+            url: `https://www.youtube.com/watch?v=${videoId}`,
+            durationInSec: data.lengthSeconds || null,
+            thumbnails: data.videoThumbnails?.length ? [{ url: data.videoThumbnails[0].url }] : [],
+          },
+          requestedBy,
+        ),
+      ];
+    } catch {
+      // Try next instance
+    }
+  }
+  return null;
 }
 
 function spawnYtDlp(args, timeoutMs = 30000) {
@@ -80,18 +149,8 @@ function buildBaseArgs() {
   return args;
 }
 
-function buildArgs(query) {
-  const args = buildBaseArgs();
-  if (isUrl(query)) {
-    if (isPlaylistUrl(query)) {
-      args.push('--flat-playlist', '--dump-json', query);
-    } else {
-      args.push('--dump-json', query);
-    }
-  } else {
-    args.push('--dump-json', `ytsearch1:${query}`);
-  }
-  return args;
+function buildYtDlpArgs(query) {
+  return [...buildBaseArgs(), '--dump-json', query];
 }
 
 function createYoutubeService({ retryDelayMs = 500 } = {}) {
@@ -108,14 +167,24 @@ function createYoutubeService({ retryDelayMs = 500 } = {}) {
     }
   }
 
-  async function resolveOnce(query, requestedBy) {
-    const args = buildArgs(query);
-    const output = await spawnYtDlp(args);
-    return parseTracks(output, requestedBy);
-  }
-
   async function resolveQuery(query, requestedBy) {
-    return withRetry(() => resolveOnce(query, requestedBy));
+    return withRetry(async () => {
+      // Try Invidious first (avoids YouTube bot detection on VPS)
+      if (isUrl(query)) {
+        const result = await resolveInvidious(query, requestedBy);
+        if (result && result.length > 0) return result;
+      } else {
+        const results = await searchInvidious(query, requestedBy);
+        if (results.length > 0) return [results[0]];
+      }
+
+      // Fallback to yt-dlp
+      let ytQuery = query;
+      if (!isUrl(query)) ytQuery = `ytsearch1:${query}`;
+      const args = buildYtDlpArgs(ytQuery);
+      const output = await spawnYtDlp(args);
+      return parseTracks(output, requestedBy);
+    });
   }
 
   async function createStream(track) {
@@ -132,7 +201,6 @@ function createYoutubeService({ retryDelayMs = 500 } = {}) {
 
   function setYoutubeCookie(_cookie) {
     // Cookies are now handled by entrypoint script writing /app/cookies.txt
-    // This method kept for backward compatibility
   }
 
   return { resolveQuery, createStream, setYoutubeCookie };
