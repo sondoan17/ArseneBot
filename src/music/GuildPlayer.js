@@ -1,5 +1,5 @@
 const { EventEmitter } = require('node:events');
-const { AudioPlayerStatus, createAudioResource, StreamType } = require('@discordjs/voice');
+const { AudioPlayerStatus, VoiceConnectionStatus, createAudioResource, entersState, StreamType } = require('@discordjs/voice');
 const { UserFacingMusicError } = require('./errors');
 
 class GuildPlayer extends EventEmitter {
@@ -59,11 +59,20 @@ class GuildPlayer extends EventEmitter {
 
   async enqueue(tracks) {
     this.clearIdleTimer();
+    this.resetStaleCurrentIfIdle();
     if (!this.current && this.queue.length === 0) {
       const [first, ...rest] = tracks;
       this.current = first || null;
       this.queue.push(...rest);
-      if (this.current) await this.playCurrent();
+      if (this.current) {
+        try {
+          await this.playCurrent();
+        } catch (error) {
+          this.current = null;
+          this.queue = [];
+          throw error;
+        }
+      }
       return { started: Boolean(this.current), added: rest.length };
     }
 
@@ -71,24 +80,48 @@ class GuildPlayer extends EventEmitter {
     return { started: false, added: tracks.length };
   }
 
+  resetStaleCurrentIfIdle() {
+    if (this.isLoading) return;
+    if (this.audioPlayer.state?.status !== AudioPlayerStatus.Idle) return;
+    if (!this.current && this.queue.length === 0) return;
+
+    this.log.warn(this.guildId, `Clearing stale playback state while audio player is idle: current=${this.current?.title || 'none'}, queue=${this.queue.length}`);
+    this.cleanupCurrentStream();
+    if (this.current) this.history.push(this.current);
+    this.current = null;
+    this.queue = [];
+  }
+
   async playCurrent(seekSeconds = 0) {
     if (!this.current) return;
+    const playStartedAt = Date.now();
     this.isLoading = true;
     try {
+      const voiceReadyStartedAt = Date.now();
+      await this.waitForVoiceReady();
+      this.log.info(this.guildId, `[timing] playCurrent voice-ready duration=${Date.now() - voiceReadyStartedAt}ms track=${this.current.title}`);
       this.log.info(this.guildId, `Creating stream for: ${this.current.title}`);
+      const createStreamStartedAt = Date.now();
       const stream = await this.youtube.createStream(this.current, seekSeconds);
       this.log.info(this.guildId, `Stream created, type=${stream.type}, connection state=${this.voiceConnection.state?.status}`);
+      this.log.info(this.guildId, `[timing] playCurrent create-stream duration=${Date.now() - createStreamStartedAt}ms track=${this.current.title}`);
 
       const resource = this.createAudioResource(stream.stream, {
         inputType: stream.type || StreamType.Arbitrary,
         inlineVolume: true,
+        metadata: {
+          streamProcess: stream.streamProcess,
+          upstreamProcess: stream.upstreamProcess,
+        },
       });
+      this.attachResourceDebug(resource, this.current);
       this.currentResource = resource;
       resource.volume?.setVolume(this.volume / 100);
 
       this.log.info(this.guildId, `Playing resource, player state=${this.audioPlayer.state?.status}`);
       this.audioPlayer.play(resource);
       this.log.info(this.guildId, `After play(), player state=${this.audioPlayer.state?.status}`);
+      this.log.info(this.guildId, `[timing] playCurrent total duration=${Date.now() - playStartedAt}ms track=${this.current.title}`);
     } finally {
       this.isLoading = false;
     }
@@ -96,6 +129,29 @@ class GuildPlayer extends EventEmitter {
     if (this.pendingSkip) {
       this.pendingSkip = false;
       this.audioPlayer.stop();
+    }
+  }
+
+
+  attachResourceDebug(resource, track) {
+    const title = track?.title || 'unknown';
+    resource.playStream?.once?.('end', () => this.log.warn(this.guildId, `[debug] resource playStream ended track=${title}`));
+    resource.playStream?.once?.('close', () => this.log.warn(this.guildId, `[debug] resource playStream closed track=${title}`));
+    resource.playStream?.once?.('error', (error) => this.log.error(this.guildId, `[debug] resource playStream error track=${title}`, error));
+    resource.stream?.once?.('end', () => this.log.warn(this.guildId, `[debug] resource stream ended track=${title}`));
+    resource.stream?.once?.('close', () => this.log.warn(this.guildId, `[debug] resource stream closed track=${title}`));
+    resource.stream?.once?.('error', (error) => this.log.error(this.guildId, `[debug] resource stream error track=${title}`, error));
+  }
+
+  async waitForVoiceReady() {
+    const status = this.voiceConnection.state?.status;
+    if (status === VoiceConnectionStatus.Ready) return;
+
+    this.log.info(this.guildId, `Waiting for voice connection ready, current state=${status}`);
+    try {
+      await entersState(this.voiceConnection, VoiceConnectionStatus.Ready, 15000);
+    } catch (error) {
+      throw new UserFacingMusicError('Bot đã join voice nhưng chưa kết nối được tới Discord voice server. Thử đổi voice region hoặc restart bot.', error);
     }
   }
 
@@ -143,8 +199,8 @@ class GuildPlayer extends EventEmitter {
   stop() {
     this.queue = [];
     this.current = null;
-    this.currentResource = null;
-    this.audioPlayer.stop();
+    this.cleanupCurrentStream();
+    this.audioPlayer.stop(true);
     this.startIdleTimer();
   }
 
@@ -204,9 +260,25 @@ class GuildPlayer extends EventEmitter {
     this.clearIdleTimer();
     this.queue = [];
     this.current = null;
-    this.currentResource = null;
+    this.cleanupCurrentStream();
+    this.audioPlayer.stop(true);
     if (this.voiceConnection.state?.status !== 'destroyed') this.voiceConnection.destroy();
     this.onDestroy?.(this.guildId);
+  }
+
+  cleanupCurrentStream() {
+    const resource = this.currentResource;
+    this.currentResource = null;
+    if (!resource) return;
+
+    try {
+      resource.playStream?.destroy?.();
+      resource.stream?.destroy?.();
+      resource.metadata?.streamProcess?.kill?.();
+      resource.metadata?.upstreamProcess?.kill?.();
+    } catch {
+      // ignore stream cleanup errors
+    }
   }
 }
 

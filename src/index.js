@@ -15,7 +15,7 @@ process.on('uncaughtException', (error) => {
 });
 
 const config = loadConfig();
-const youtube = createYoutubeService();
+const youtube = createYoutubeService({ log });
 youtube.setYoutubeCookie(config.youtubeCookie);
 
 const client = createClient();

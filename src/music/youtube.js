@@ -1,12 +1,18 @@
 const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
+const { PassThrough } = require('node:stream');
 const { StreamType } = require('@discordjs/voice');
 const { createTrack } = require('./Track');
 const { classifyYoutubeError } = require('./errors');
 
-const YTDLP_PATH = 'yt-dlp';
-const COOKIES_FILE = '/app/cookies.txt';
-const JS_RUNTIME = 'node';
+const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
+const COOKIES_FILE = process.env.YOUTUBE_COOKIE_FILE || '/app/cookies.txt';
+const JS_RUNTIME = process.env.YTDLP_JS_RUNTIME || 'node';
+const COOKIES_FROM_BROWSER = process.env.YTDLP_COOKIES_FROM_BROWSER || null;
+const CHROMIUM_PROFILE_DIR = process.env.CHROMIUM_PROFILE || '/home/bot/.config/chromium';
+const PO_TOKEN = process.env.YTDLP_PO_TOKEN || null;
+const VISITOR_DATA = process.env.YTDLP_VISITOR_DATA || null;
+const USER_AGENT = process.env.YTDLP_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 // Public Invidious instances for search (yt-dlp blocked on VPS IPs)
 const INVIDIOUS_INSTANCES = [
@@ -25,6 +31,23 @@ function isUrl(query) {
 
 function isPlaylistUrl(query) {
   return /[?&]list=/.test(query);
+}
+
+function normalizeYoutubeQuery(query) {
+  if (!isUrl(query)) return query;
+  try {
+    const url = new URL(query);
+    const videoId = url.searchParams.get('v') || url.pathname.match(/^\/shorts\/([a-zA-Z0-9_-]{11})/)?.[1];
+    const listId = url.searchParams.get('list') || '';
+
+    // YouTube radio/mix URLs are slow and can expand into huge playlists. Play the requested video only.
+    if (videoId && (listId.startsWith('RD') || url.searchParams.has('start_radio'))) {
+      return `https://www.youtube.com/watch?v=${videoId}`;
+    }
+  } catch {
+    // Keep the original query if URL parsing fails.
+  }
+  return query;
 }
 
 async function fetchJson(url) {
@@ -141,20 +164,79 @@ function parseTracks(output, requestedBy) {
     .filter(Boolean);
 }
 
+function hasCookieAuth() {
+  return Boolean(getCookiesFromBrowserValue() || existsSync(COOKIES_FILE));
+}
+
+function hasChromiumProfile() {
+  return existsSync(CHROMIUM_PROFILE_DIR);
+}
+
+function getCookiesFromBrowserValue() {
+  if (COOKIES_FROM_BROWSER) return COOKIES_FROM_BROWSER;
+  if (hasChromiumProfile()) return 'chromium';
+  return null;
+}
+
+function buildExtractorArgs() {
+  const args = [];
+  if (PO_TOKEN) {
+    args.push(`po_token=web+${PO_TOKEN}`);
+    args.push('player_client=web');
+  } else if (hasCookieAuth()) {
+    args.push('player_client=web');
+  } else {
+    args.push('player_client=ios');
+  }
+  if (VISITOR_DATA) args.push(`visitor_data=${VISITOR_DATA}`);
+  return `youtube:${args.join(';')}`;
+}
+
 function buildBaseArgs() {
-  const args = ['--js-runtime', JS_RUNTIME];
-  if (existsSync(COOKIES_FILE)) {
+  const cookiesFromBrowser = getCookiesFromBrowserValue();
+  const args = [
+    '--js-runtime', JS_RUNTIME,
+    '--no-check-certificates',
+    '--user-agent', USER_AGENT,
+    '--extractor-args', buildExtractorArgs(),
+    '--buffer-size', '16K',
+    '--socket-timeout', '15',
+    '--retries', '10',
+    '--fragment-retries', '10',
+    '--concurrent-fragments', '1',
+  ];
+
+  if (cookiesFromBrowser) {
+    args.push('--cookies-from-browser', cookiesFromBrowser);
+  } else if (existsSync(COOKIES_FILE)) {
     args.push('--cookies', COOKIES_FILE);
   }
+
   return args;
 }
 
-function buildYtDlpArgs(query) {
-  return [...buildBaseArgs(), '--dump-json', query];
+function redactArgs(args) {
+  const redacted = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    redacted.push(arg);
+    if ((arg === '--cookies' || arg === '--cookies-from-browser' || arg === '--extractor-args') && i + 1 < args.length) {
+      redacted.push('[redacted]');
+      i += 1;
+    }
+  }
+  return redacted.join(' ');
 }
 
-function createYoutubeService({ retryDelayMs = 500 } = {}) {
-  async function withRetry(operation) {
+function buildYtDlpArgs(query) {
+  const args = [...buildBaseArgs(), '--dump-json'];
+  if (isUrl(query) && !isPlaylistUrl(query)) args.push('--no-playlist');
+  args.push(query);
+  return args;
+}
+
+function createYoutubeService({ retryDelayMs = 500, runYtDlp = spawnYtDlp, spawnStream = spawn, enableInvidious = true, log = null } = {}) {
+  async function withRetry(operation, classifyError = classifyYoutubeError, context = {}) {
     try {
       return await operation();
     } catch (firstError) {
@@ -162,41 +244,149 @@ function createYoutubeService({ retryDelayMs = 500 } = {}) {
       try {
         return await operation();
       } catch (secondError) {
-        throw classifyYoutubeError(secondError);
+        throw classifyError(secondError, context);
       }
     }
   }
 
   async function resolveQuery(query, requestedBy) {
+    const startedAt = Date.now();
     return withRetry(async () => {
-      // Try Invidious first (avoids YouTube bot detection on VPS)
-      if (isUrl(query)) {
-        const result = await resolveInvidious(query, requestedBy);
-        if (result && result.length > 0) return result;
-      } else {
-        const results = await searchInvidious(query, requestedBy);
-        if (results.length > 0) return [results[0]];
+      const normalizedQuery = normalizeYoutubeQuery(query);
+      const invidiousStartedAt = Date.now();
+      if (enableInvidious) {
+        if (isUrl(normalizedQuery)) {
+          const result = await resolveInvidious(normalizedQuery, requestedBy);
+          log?.info?.('-', `[timing] resolveQuery invidious-url duration=${Date.now() - invidiousStartedAt}ms query=${normalizedQuery}`);
+          if (result && result.length > 0) {
+            log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=invidious-url tracks=${result.length}`);
+            return result;
+          }
+        } else {
+          const results = await searchInvidious(normalizedQuery, requestedBy);
+          log?.info?.('-', `[timing] resolveQuery invidious-search duration=${Date.now() - invidiousStartedAt}ms query=${normalizedQuery}`);
+          if (results.length > 0) {
+            log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=invidious-search tracks=1`);
+            return [results[0]];
+          }
+        }
       }
 
-      // Fallback to yt-dlp
-      let ytQuery = query;
-      if (!isUrl(query)) ytQuery = `ytsearch1:${query}`;
+      let ytQuery = normalizedQuery;
+      if (!isUrl(normalizedQuery)) ytQuery = `ytsearch1:${normalizedQuery}`;
       const args = buildYtDlpArgs(ytQuery);
-      const output = await spawnYtDlp(args);
-      return parseTracks(output, requestedBy);
+      const ytDlpStartedAt = Date.now();
+      const output = await runYtDlp(args);
+      const tracks = parseTracks(output, requestedBy);
+      log?.info?.('-', `[timing] resolveQuery yt-dlp duration=${Date.now() - ytDlpStartedAt}ms query=${ytQuery} tracks=${tracks.length}`);
+      log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=yt-dlp tracks=${tracks.length}`);
+      return tracks;
+    }, classifyYoutubeError, {
+      phase: 'resolveQuery',
+      query,
+      requestedById: requestedBy?.id || null,
+      requestedByUsername: requestedBy?.username || null,
     });
   }
 
   async function createStream(track) {
-    try {
-      const args = [...buildBaseArgs(), '-f', 'bestaudio', '-o', '-', '--no-playlist', track.url];
-      const proc = spawn(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-      proc.stderr.on('data', () => {});
+    const startedAt = Date.now();
+    return withRetry(async () => {
+      const streamStartedAt = Date.now();
+      const args = [...buildBaseArgs(), '-f', 'bestaudio/best', '-o', '-', '--no-playlist', track.url];
+      const proc = spawnStream(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const output = new PassThrough();
+      log?.info?.('-', `[debug] yt-dlp stream spawned pid=${proc.pid || 'n/a'} track=${track.title || track.url}`);
+      log?.info?.('-', `[debug] yt-dlp stream args=${redactArgs(args)}`);
 
-      return { stream: proc.stdout, type: StreamType.Arbitrary };
-    } catch (error) {
-      throw classifyYoutubeError(error);
-    }
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        let stderr = '';
+
+        const cleanup = () => {
+          clearTimeout(timer);
+          proc.stdout?.off?.('data', onFirstData);
+          proc.stdout?.off?.('error', onStreamError);
+          proc.stderr?.off?.('data', onStderr);
+          proc.off?.('error', onProcessError);
+          proc.off?.('close', onStartupClose);
+        };
+
+        const fail = (error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          output.destroy();
+          proc.kill?.();
+          reject(error);
+        };
+
+        const succeed = (chunk) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          output.write(chunk);
+          proc.stdout?.pipe?.(output);
+          log?.info?.('-', `[timing] createStream stream-ready duration=${Date.now() - streamStartedAt}ms track=${track.title || track.url}`);
+          resolve();
+        };
+
+        const onStderr = (data) => {
+          stderr += data.toString();
+          if (stderr.length > 4000) stderr = stderr.slice(-4000);
+          const compact = data.toString().trim();
+          if (compact) {
+            log?.info?.('-', `[debug] yt-dlp startup stderr pid=${proc.pid || 'n/a'} ${compact.slice(0, 500)}`);
+          }
+        };
+
+        const onFirstData = (chunk) => {
+          if (chunk?.length > 0) succeed(chunk);
+        };
+
+        const onStreamError = (error) => {
+          fail(error);
+        };
+
+        const onProcessError = (error) => {
+          fail(error);
+        };
+
+        const onStartupClose = (code, signal) => {
+          log?.warn?.('-', `[debug] yt-dlp stream closed before audio data code=${code} signal=${signal || 'none'} stderr=${stderr.trim()}`);
+          fail(new Error(stderr.trim() || `yt-dlp stream exited before audio data with code ${code}`));
+        };
+
+        const timer = setTimeout(() => {
+          log?.warn?.('-', `[debug] yt-dlp stream startup timeout pid=${proc.pid || 'n/a'} stderr=${stderr.trim()}`);
+          fail(new Error('yt-dlp stream startup timed out'));
+        }, 30000);
+
+        proc.stderr?.on?.('data', onStderr);
+        proc.stdout?.on?.('data', onFirstData);
+        proc.stdout?.once?.('error', onStreamError);
+        proc.once?.('error', onProcessError);
+        proc.once?.('close', onStartupClose);
+      });
+
+      let stderrAfterReady = '';
+      proc.stderr?.on?.('data', (data) => {
+        stderrAfterReady += data.toString();
+        if (stderrAfterReady.length > 4000) stderrAfterReady = stderrAfterReady.slice(-4000);
+      });
+      proc.stdout?.once?.('end', () => log?.warn?.('-', `[debug] yt-dlp stdout ended track=${track.title || track.url}`));
+      proc.stdout?.once?.('close', () => log?.warn?.('-', `[debug] yt-dlp stdout closed track=${track.title || track.url}`));
+      proc.stdout?.once?.('error', (error) => log?.error?.('-', `[debug] yt-dlp stdout error track=${track.title || track.url}`, error));
+      proc.once?.('close', (code, signal) => log?.warn?.('-', `[debug] yt-dlp process closed after ready code=${code} signal=${signal || 'none'} track=${track.title || track.url} stderr=${stderrAfterReady.trim()}`));
+      proc.once?.('error', (error) => log?.error?.('-', `[debug] yt-dlp process error after ready track=${track.title || track.url}`, error));
+
+      log?.info?.('-', `[timing] createStream total duration=${Date.now() - startedAt}ms track=${track.title || track.url}`);
+      return { stream: output, type: StreamType.Arbitrary, streamProcess: proc };
+    }, classifyYoutubeError, {
+      phase: 'createStream',
+      trackTitle: track.title || null,
+      trackUrl: track.url || null,
+    });
   }
 
   function setYoutubeCookie(_cookie) {

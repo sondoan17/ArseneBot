@@ -1,5 +1,31 @@
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { SlashCommandBuilder, PermissionsBitField } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
+const { UserFacingMusicError, isYoutubeAuthError } = require('../music/errors');
+const { requireSameVoiceChannel } = require('./voiceAccess');
+
+const execFileAsync = promisify(execFile);
+
+const TRANSIENT_YOUTUBE_ERROR_MESSAGE = 'Không thể tải dữ liệu từ YouTube. Vui lòng thử lại sau.';
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetry(error) {
+  return error instanceof UserFacingMusicError && error.message === TRANSIENT_YOUTUBE_ERROR_MESSAGE;
+}
+
+async function refreshYoutubeAuth(log, guildId) {
+  log.warn(guildId, '[auth] Starting one-shot Playwright refresh for YouTube auth');
+  const { stdout, stderr } = await execFileAsync('sh', [
+    '-lc',
+    'rm -f /home/bot/.config/chromium/chromium/Singleton* 2>/dev/null; timeout 120 xvfb-run -a -s "-screen 0 1280x720x24" node /app/scripts/refresh-yt-auth.js',
+  ], { timeout: 130000, maxBuffer: 1024 * 1024 });
+  const summary = [stdout, stderr].filter(Boolean).join('\n').trim().slice(-2000);
+  log.warn(guildId, `[auth] Playwright refresh finished output=${summary || 'none'}`);
+}
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -9,12 +35,7 @@ module.exports = {
   async execute(interaction, { youtube, musicManager, log }) {
     // deferReply already done in interactionCreate handler
     const query = interaction.options.getString('query', true);
-    const voiceChannel = interaction.member.voice.channel;
-
-    if (!voiceChannel) {
-      await interaction.editReply({ embeds: [errorEmbed('Bạn cần vào voice channel trước.')] });
-      return;
-    }
+    const voiceChannel = requireSameVoiceChannel(interaction);
 
     const permissions = voiceChannel.permissionsFor(interaction.guild.members.me);
     if (!permissions.has(PermissionsBitField.Flags.Connect) || !permissions.has(PermissionsBitField.Flags.Speak)) {
@@ -22,31 +43,79 @@ module.exports = {
       return;
     }
 
-    log.info(interaction.guildId, `User ${interaction.user.id} requested play: ${query}`);
-    const tracks = await youtube.resolveQuery(query, {
-      id: interaction.user.id,
-      username: interaction.user.username,
-    });
-    if (tracks.length === 0) {
-      await interaction.editReply({ embeds: [errorEmbed('Không tìm thấy kết quả phù hợp.')] });
-      return;
-    }
+    const commandStartedAt = Date.now();
+    await musicManager.withGuildLock(interaction.guildId, async () => {
+      log.info(interaction.guildId, `User ${interaction.user.id} requested play: ${query}`);
+      log.info(interaction.guildId, `[timing] /play start query=${query}`);
 
-    let player;
-    try {
-      player = musicManager.getOrCreate({ guild: interaction.guild, voiceChannel, textChannelId: interaction.channelId });
-    } catch (error) {
-      if (error.code === 'PLAYER_IN_DIFFERENT_CHANNEL') {
-        await interaction.editReply({ embeds: [errorEmbed('Bot đang phát ở channel khác.')] });
-        return;
+      let authRefreshed = false;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          const resolveStartedAt = Date.now();
+          const tracks = await youtube.resolveQuery(query, {
+            id: interaction.user.id,
+            username: interaction.user.username,
+          });
+          log.info(interaction.guildId, `[timing] /play resolve duration=${Date.now() - resolveStartedAt}ms tracks=${tracks.length} attempt=${attempt}`);
+          if (tracks.length === 0) {
+            await interaction.editReply({ embeds: [errorEmbed('Không tìm thấy kết quả phù hợp.')] });
+            return;
+          }
+
+          let player;
+          try {
+            player = musicManager.getOrCreate({ guild: interaction.guild, voiceChannel, textChannelId: interaction.channelId });
+          } catch (error) {
+            if (error.code === 'PLAYER_IN_DIFFERENT_CHANNEL') {
+              await interaction.editReply({ embeds: [errorEmbed('Bot đang phát ở channel khác.')] });
+              return;
+            }
+            throw error;
+          }
+
+          const enqueueStartedAt = Date.now();
+          const result = await player.enqueue(tracks);
+          log.info(interaction.guildId, `[timing] /play enqueue duration=${Date.now() - enqueueStartedAt}ms started=${result.started} added=${result.added} attempt=${attempt}`);
+          const message = result.started
+            ? `Đang phát: **${tracks[0].title}**`
+            : tracks.length === 1
+              ? `Đã thêm vào hàng đợi: **${tracks[0].title}**`
+              : `Đã thêm **${tracks.length}** bài vào hàng đợi. Bài đầu: **${tracks[0].title}**`;
+          if (!result.started) {
+            log.warn(
+              interaction.guildId,
+              `[queue] replying queued current=${player.current?.title || 'none'} queue=${player.queue.length} audio=${player.audioPlayer.state?.status || 'unknown'} voice=${player.voiceConnection.state?.status || 'unknown'} userVoice=${voiceChannel.id} botVoice=${interaction.guild.members.me?.voice?.channelId || 'none'} addedTitles=${tracks.map((track) => track.title).join(' | ')}`,
+            );
+          }
+          log.info(interaction.guildId, `[reply] /play editReply-start attempt=${attempt} result=${result.started ? 'started' : 'queued'} deferred=${interaction.deferred} replied=${interaction.replied}`);
+          await interaction.editReply({ embeds: [successEmbed(message)] });
+          log.info(interaction.guildId, `[reply] /play editReply-ok attempt=${attempt} result=${result.started ? 'started' : 'queued'} deferred=${interaction.deferred} replied=${interaction.replied}`);
+          log.info(interaction.guildId, `[timing] /play total duration=${Date.now() - commandStartedAt}ms attempt=${attempt} result=${result.started ? 'started' : 'queued'}`);
+          return;
+        } catch (error) {
+          if (!authRefreshed && isYoutubeAuthError(error)) {
+            authRefreshed = true;
+            try {
+              await interaction.editReply({ embeds: [successEmbed('YouTube yêu cầu xác thực. Bot đang tự làm mới phiên đăng nhập, vui lòng đợi thêm chút...')] });
+            } catch {
+              // Best effort status update only.
+            }
+            log.warn(interaction.guildId, `YouTube auth error on /play, refreshing auth once... query=${query} meta=${JSON.stringify(error.meta || {})} cause=${error.cause?.message || error.message}`);
+            await refreshYoutubeAuth(log, interaction.guildId);
+            await delay(1500);
+            continue;
+          }
+          if (attempt === 1 && shouldRetry(error)) {
+            log.warn(interaction.guildId, `Transient YouTube error on /play, retrying once... query=${query} meta=${JSON.stringify(error.meta || {})} cause=${error.cause?.message || error.message}`);
+            await delay(1200);
+            continue;
+          }
+          if (shouldRetry(error) || isYoutubeAuthError(error)) {
+            log.error(interaction.guildId, `Returning YouTube failure to user on /play query=${query} attempt=${attempt} meta=${JSON.stringify(error.meta || {})} cause=${error.cause?.message || error.message}`);
+          }
+          throw error;
+        }
       }
-      throw error;
-    }
-
-    const result = await player.enqueue(tracks);
-    const message = result.started
-      ? `Đang phát: **${tracks[0].title}**`
-      : `Đã thêm **${tracks.length}** bài vào hàng đợi.`;
-    await interaction.editReply({ embeds: [successEmbed(message)] });
+    });
   },
 };

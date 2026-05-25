@@ -1,75 +1,101 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { PassThrough } = require('node:stream');
 
 const { createYoutubeService } = require('../../src/music/youtube');
 const { UserFacingMusicError } = require('../../src/music/errors');
 
-test('resolveQuery resolves video URLs into one track', async () => {
+const requestedBy = { id: 'u1', username: 'User' };
+
+function jsonLine(data) {
+  return `${JSON.stringify(data)}\n`;
+}
+
+test('resolveQuery resolves video URLs into one track with yt-dlp', async () => {
   const calls = [];
-  const play = {
-    validate: async () => 'video',
-    video_basic_info: async (url) => {
-      calls.push(['video_basic_info', url]);
-      return { video_details: { title: 'Song', url, durationInSec: 90, thumbnails: [{ url: 'thumb' }] } };
+  const service = createYoutubeService({
+    retryDelayMs: 0,
+    enableInvidious: false,
+    runYtDlp: async (args) => {
+      calls.push(args);
+      return jsonLine({ title: 'Song', webpage_url: 'https://youtube.com/watch?v=12345678901', duration: 90, thumbnail: 'thumb' });
     },
-  };
-  const service = createYoutubeService(play, { retryDelayMs: 0 });
+  });
 
-  const tracks = await service.resolveQuery('https://youtube.test/watch?v=1', { id: 'u1', username: 'User' });
+  const tracks = await service.resolveQuery('https://youtube.com/watch?v=12345678901', requestedBy);
 
-  assert.deepEqual(calls, [['video_basic_info', 'https://youtube.test/watch?v=1']]);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].includes('--dump-json'));
+  assert.equal(calls[0].at(-1), 'https://youtube.com/watch?v=12345678901');
   assert.equal(tracks.length, 1);
   assert.equal(tracks[0].title, 'Song');
   assert.equal(tracks[0].duration, 90);
   assert.equal(tracks[0].requestedBy.id, 'u1');
 });
 
-test('resolveQuery resolves playlists into tracks', async () => {
-  const play = {
-    validate: async () => 'playlist',
-    playlist_info: async () => ({
-      all_videos: async () => [
-        { title: 'A', url: 'url-a', durationInSec: 1, thumbnails: [] },
-        { title: 'B', url: 'url-b', durationInSec: 2, thumbnails: [{ url: 'b.jpg' }] },
-      ],
-    }),
-  };
-  const service = createYoutubeService(play, { retryDelayMs: 0 });
+test('resolveQuery resolves playlists into tracks from yt-dlp json lines', async () => {
+  const service = createYoutubeService({
+    retryDelayMs: 0,
+    enableInvidious: false,
+    runYtDlp: async () => [
+      jsonLine({ title: 'A', webpage_url: 'url-a', duration: 1 }),
+      jsonLine({ title: 'B', webpage_url: 'url-b', duration: 2, thumbnail: 'b.jpg' }),
+    ].join(''),
+  });
 
-  const tracks = await service.resolveQuery('playlist-url', { id: 'u1' });
+  const tracks = await service.resolveQuery('https://youtube.test/playlist?list=1', { id: 'u1' });
 
   assert.equal(tracks.length, 2);
   assert.deepEqual(tracks.map((track) => track.url), ['url-a', 'url-b']);
 });
 
-test('resolveQuery searches keyword queries', async () => {
-  const play = {
-    validate: async () => 'search',
-    search: async (query, options) => {
-      assert.equal(query, 'lofi beats');
-      assert.deepEqual(options, { limit: 1, source: { youtube: 'video' } });
-      return [{ title: 'Lofi', url: 'url', durationInSec: 30, thumbnails: [] }];
+test('resolveQuery strips YouTube radio playlist params to play the requested video only', async () => {
+  const calls = [];
+  const service = createYoutubeService({
+    retryDelayMs: 0,
+    enableInvidious: false,
+    runYtDlp: async (args) => {
+      calls.push(args);
+      return jsonLine({ title: 'Radio Song', webpage_url: 'https://youtube.com/watch?v=h_D3VFfhvs4', duration: 120 });
     },
-  };
-  const service = createYoutubeService(play, { retryDelayMs: 0 });
+  });
+
+  const tracks = await service.resolveQuery('https://www.youtube.com/watch?v=h_D3VFfhvs4&list=RDh_D3VFfhvs4&start_radio=1', requestedBy);
+
+  assert.ok(calls[0].includes('--no-playlist'));
+  assert.equal(calls[0].at(-1), 'https://www.youtube.com/watch?v=h_D3VFfhvs4');
+  assert.equal(tracks[0].title, 'Radio Song');
+});
+
+test('resolveQuery searches keyword queries with ytsearch1 fallback', async () => {
+  const calls = [];
+  const service = createYoutubeService({
+    retryDelayMs: 0,
+    enableInvidious: false,
+    runYtDlp: async (args) => {
+      calls.push(args);
+      return jsonLine({ title: 'Lofi', webpage_url: 'url', duration: 30 });
+    },
+  });
 
   const tracks = await service.resolveQuery('lofi beats', { id: 'u1' });
 
+  assert.equal(calls[0].at(-1), 'ytsearch1:lofi beats');
   assert.equal(tracks.length, 1);
   assert.equal(tracks[0].title, 'Lofi');
 });
 
 test('resolveQuery retries one transient failure', async () => {
   let attempts = 0;
-  const play = {
-    validate: async () => 'video',
-    video_basic_info: async () => {
+  const service = createYoutubeService({
+    retryDelayMs: 0,
+    enableInvidious: false,
+    runYtDlp: async () => {
       attempts += 1;
       if (attempts === 1) throw new Error('network timeout');
-      return { video_details: { title: 'Retry Song', url: 'url', durationInSec: 10, thumbnails: [] } };
+      return jsonLine({ title: 'Retry Song', webpage_url: 'url', duration: 10 });
     },
-  };
-  const service = createYoutubeService(play, { retryDelayMs: 0 });
+  });
 
   const tracks = await service.resolveQuery('url', { id: 'u1' });
 
@@ -78,16 +104,71 @@ test('resolveQuery retries one transient failure', async () => {
 });
 
 test('resolveQuery maps YouTube sign-in errors to cookie guidance', async () => {
-  const play = {
-    validate: async () => 'video',
-    video_basic_info: async () => {
+  const service = createYoutubeService({
+    retryDelayMs: 0,
+    enableInvidious: false,
+    runYtDlp: async () => {
       throw new Error('Sign in to confirm your age');
     },
-  };
-  const service = createYoutubeService(play, { retryDelayMs: 0 });
+  });
 
   await assert.rejects(
     () => service.resolveQuery('url', { id: 'u1' }),
     (error) => error instanceof UserFacingMusicError && error.message.includes('YOUTUBE_COOKIE'),
   );
+});
+
+function createMockProc() {
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const handlers = { error: [], close: [] };
+
+  return {
+    stdout,
+    stderr,
+    stdin: new PassThrough(),
+    once(event, handler) {
+      handlers[event].push(handler);
+      return this;
+    },
+    off(event, handler) {
+      handlers[event] = handlers[event].filter((candidate) => candidate !== handler);
+      return this;
+    },
+    emit(event, ...args) {
+      for (const handler of handlers[event]) handler(...args);
+    },
+    kill() {
+      return true;
+    },
+  };
+}
+
+test('createStream retries once when stream startup fails early', async () => {
+  let attempts = 0;
+  const service = createYoutubeService({
+    retryDelayMs: 0,
+    spawnStream: () => {
+      attempts += 1;
+      const proc = createMockProc();
+
+      process.nextTick(() => {
+        if (attempts === 1) {
+          proc.stderr.write('temporary upstream failure');
+          proc.emit('close', 1);
+          return;
+        }
+
+        proc.stdout.write('audio bytes');
+      });
+
+      return proc;
+    },
+  });
+
+  const result = await service.createStream({ url: 'https://youtube.com/watch?v=12345678901' });
+
+  assert.equal(attempts, 2);
+  assert.ok(result.stream);
+  assert.equal(result.type, 'arbitrary');
 });
