@@ -208,7 +208,7 @@ async function doGoogleLogin(page, email, password) {
 
     await clickAndTrack(page, nextBtn.locator, 'email-next', 4000);
   } else {
-    log.warn('No email input found after Sign In click');
+    log.info('[step] no email input shown; checking account chooser flow');
     await debugState(page, 'email-missing');
   }
 

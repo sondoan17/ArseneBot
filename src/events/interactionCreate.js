@@ -2,8 +2,8 @@ const { Events } = require('discord.js');
 const { errorEmbed } = require('../ui/embeds');
 const { UserFacingMusicError } = require('../music/errors');
 
-// Commands that need early deferReply (slow operations: search, stream)
-const DEFER_COMMANDS = new Set(['play', 'seek']);
+// Commands that need early deferReply (slow operations: search, stream, voice join)
+const DEFER_COMMANDS = new Set(['alo', 'mixi', 'play', 'seek']);
 
 function commandOptionsSummary(interaction) {
   const options = interaction.options?.data || [];

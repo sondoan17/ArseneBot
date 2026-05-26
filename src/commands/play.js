@@ -17,6 +17,14 @@ function shouldRetry(error) {
   return error instanceof UserFacingMusicError && error.message === TRANSIENT_YOUTUBE_ERROR_MESSAGE;
 }
 
+async function updateStatus(interaction, message) {
+  try {
+    await interaction.editReply({ embeds: [successEmbed(message)] });
+  } catch {
+    // Best effort status update only.
+  }
+}
+
 async function refreshYoutubeAuth(log, guildId) {
   log.warn(guildId, '[auth] Starting one-shot Playwright refresh for YouTube auth');
   const { stdout, stderr } = await execFileAsync('sh', [
@@ -47,6 +55,7 @@ module.exports = {
     await musicManager.withGuildLock(interaction.guildId, async () => {
       log.info(interaction.guildId, `User ${interaction.user.id} requested play: ${query}`);
       log.info(interaction.guildId, `[timing] /play start query=${query}`);
+      await updateStatus(interaction, 'Ae đợi tí anh Độ đang tìm bài hát');
 
       let authRefreshed = false;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -62,6 +71,8 @@ module.exports = {
             return;
           }
 
+          await updateStatus(interaction, `Anh Độ tìm thấy rồi: **${tracks[0].title}**`);
+
           let player;
           try {
             player = musicManager.getOrCreate({ guild: interaction.guild, voiceChannel, textChannelId: interaction.channelId });
@@ -73,6 +84,7 @@ module.exports = {
             throw error;
           }
 
+          await updateStatus(interaction, 'Anh Độ tìm thấy bài rồi, đang vào voice...');
           const enqueueStartedAt = Date.now();
           const result = await player.enqueue(tracks);
           log.info(interaction.guildId, `[timing] /play enqueue duration=${Date.now() - enqueueStartedAt}ms started=${result.started} added=${result.added} attempt=${attempt}`);
@@ -95,11 +107,7 @@ module.exports = {
         } catch (error) {
           if (!authRefreshed && isYoutubeAuthError(error)) {
             authRefreshed = true;
-            try {
-              await interaction.editReply({ embeds: [successEmbed('YouTube yêu cầu xác thực. Bot đang tự làm mới phiên đăng nhập, vui lòng đợi thêm chút...')] });
-            } catch {
-              // Best effort status update only.
-            }
+            await updateStatus(interaction, 'YouTube đang đòi xác thực, anh Độ đang tự đăng nhập lại...');
             log.warn(interaction.guildId, `YouTube auth error on /play, refreshing auth once... query=${query} meta=${JSON.stringify(error.meta || {})} cause=${error.cause?.message || error.message}`);
             await refreshYoutubeAuth(log, interaction.guildId);
             await delay(1500);

@@ -8,6 +8,7 @@ const { classifyYoutubeError } = require('./errors');
 const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
 const COOKIES_FILE = process.env.YOUTUBE_COOKIE_FILE || '/app/cookies.txt';
 const JS_RUNTIME = process.env.YTDLP_JS_RUNTIME || 'node';
+const ENABLE_JS_RUNTIME = process.env.YTDLP_ENABLE_JS_RUNTIME === '1';
 const COOKIES_FROM_BROWSER = process.env.YTDLP_COOKIES_FROM_BROWSER || null;
 const CHROMIUM_PROFILE_DIR = process.env.CHROMIUM_PROFILE || '/home/bot/.config/chromium';
 const PO_TOKEN = process.env.YTDLP_PO_TOKEN || null;
@@ -184,7 +185,8 @@ function buildExtractorArgs() {
     args.push(`po_token=web+${PO_TOKEN}`);
     args.push('player_client=web');
   } else if (hasCookieAuth()) {
-    args.push('player_client=web');
+    args.push('player_client=web_safari');
+    args.push('player_skip=webpage,configs');
   } else {
     args.push('player_client=ios');
   }
@@ -195,7 +197,6 @@ function buildExtractorArgs() {
 function buildBaseArgs() {
   const cookiesFromBrowser = getCookiesFromBrowserValue();
   const args = [
-    '--js-runtime', JS_RUNTIME,
     '--no-check-certificates',
     '--user-agent', USER_AGENT,
     '--extractor-args', buildExtractorArgs(),
@@ -205,6 +206,11 @@ function buildBaseArgs() {
     '--fragment-retries', '10',
     '--concurrent-fragments', '1',
   ];
+
+  if (ENABLE_JS_RUNTIME) {
+    args.unshift(JS_RUNTIME);
+    args.unshift('--js-runtime');
+  }
 
   if (cookiesFromBrowser) {
     args.push('--cookies-from-browser', cookiesFromBrowser);
@@ -293,7 +299,15 @@ function createYoutubeService({ retryDelayMs = 500, runYtDlp = spawnYtDlp, spawn
     const startedAt = Date.now();
     return withRetry(async () => {
       const streamStartedAt = Date.now();
-      const args = [...buildBaseArgs(), '-f', 'bestaudio/best', '-o', '-', '--no-playlist', track.url];
+      const args = [
+        ...buildBaseArgs(),
+        '-f',
+        'bestaudio[protocol!=m3u8_native]/bestaudio/best[protocol=m3u8_native]/best',
+        '-o',
+        '-',
+        '--no-playlist',
+        track.url,
+      ];
       const proc = spawnStream(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
       const output = new PassThrough();
       log?.info?.('-', `[debug] yt-dlp stream spawned pid=${proc.pid || 'n/a'} track=${track.title || track.url}`);

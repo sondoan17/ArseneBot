@@ -1,4 +1,5 @@
 const { EventEmitter } = require('node:events');
+const { createReadStream } = require('node:fs');
 const { AudioPlayerStatus, VoiceConnectionStatus, createAudioResource, entersState, StreamType } = require('@discordjs/voice');
 const { UserFacingMusicError } = require('./errors');
 
@@ -223,6 +224,36 @@ class GuildPlayer extends EventEmitter {
 
   setLoopMode(loopMode) {
     this.loopMode = loopMode;
+  }
+
+  isIdle() {
+    return !this.isLoading
+      && !this.current
+      && this.queue.length === 0
+      && this.audioPlayer.state?.status !== AudioPlayerStatus.Playing
+      && this.audioPlayer.state?.status !== AudioPlayerStatus.Buffering;
+  }
+
+  async playClip(filePath, metadata = {}) {
+    if (!this.isIdle()) {
+      const error = new UserFacingMusicError('Bot đang phát hoặc còn bài trong hàng đợi.');
+      error.code = 'PLAYER_BUSY';
+      throw error;
+    }
+
+    this.clearIdleTimer();
+    await this.waitForVoiceReady();
+    this.cleanupCurrentStream();
+
+    const stream = createReadStream(filePath);
+    const resource = this.createAudioResource(stream, {
+      inputType: StreamType.Arbitrary,
+      inlineVolume: true,
+      metadata,
+    });
+    this.currentResource = resource;
+    resource.volume?.setVolume(this.volume / 100);
+    this.audioPlayer.play(resource);
   }
 
   shuffle() {

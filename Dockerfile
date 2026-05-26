@@ -1,6 +1,14 @@
 FROM node:22-alpine
 RUN apk add --no-cache chromium ffmpeg python3 xvfb-run
-RUN wget -q https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp
+ARG YTDLP_VERSION=2026.03.17
+RUN set -eux; \
+    base_url="https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}"; \
+    wget -q "${base_url}/yt-dlp" -O /tmp/yt-dlp; \
+    wget -q "${base_url}/SHA2-256SUMS" -O /tmp/SHA2-256SUMS; \
+    grep '  yt-dlp$' /tmp/SHA2-256SUMS > /tmp/yt-dlp.sha256; \
+    (cd /tmp && sha256sum -c /tmp/yt-dlp.sha256); \
+    install -m 0755 /tmp/yt-dlp /usr/local/bin/yt-dlp; \
+    rm -f /tmp/yt-dlp /tmp/SHA2-256SUMS /tmp/yt-dlp.sha256
 
 WORKDIR /app
 COPY package*.json ./

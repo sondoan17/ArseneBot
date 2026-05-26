@@ -47,6 +47,7 @@ test('play retries once on transient youtube error and then succeeds', async () 
   await playCommand.execute(interaction, context);
 
   assert.equal(calls, 2);
-  assert.equal(interaction._replies.length, 1);
-  assert.match(interaction._replies[0].embeds[0].data.description, /Đang phát/);
+  assert.ok(interaction._replies.length >= 3);
+  assert.match(interaction._replies[0].embeds[0].data.description, /Ae đợi tí anh Độ đang tìm bài hát/);
+  assert.match(interaction._replies[interaction._replies.length - 1].embeds[0].data.description, /Đang phát/);
 });
