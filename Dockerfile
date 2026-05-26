@@ -14,7 +14,6 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev && npm install playwright-core@^1.52.0 --no-save
 COPY . .
-
 RUN chmod +x /app/docker-entrypoint.sh /app/scripts/refresh-yt-auth.js \
     && addgroup -g 1001 bot \
     && adduser -u 1001 -G bot -s /bin/sh -D bot \

@@ -60,12 +60,13 @@ test('returns existing player when connection is ready and in same channel', () 
   assert.notEqual(player, null);
 });
 
-test('discards player when connection is disconnected', () => {
+test('discards player when connection is disconnected', async () => {
   const { manager, connection } = createManagerWithConnection();
   connection.state = { status: 'disconnected' };
 
   // Simulate state change
   connection.emit('stateChange', { status: 'ready' }, { status: 'disconnected' });
+  await new Promise((resolve) => setImmediate(resolve));
 
   // Next getOrCreate should discard stale player
   let joinCalls = 0;
