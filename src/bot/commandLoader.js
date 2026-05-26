@@ -8,9 +8,7 @@ function loadCommands(client, commandsPath = path.join(__dirname, '..', 'command
 
   for (const file of files) {
     const command = require(path.join(commandsPath, file));
-    if (!command?.data?.name || typeof command.execute !== 'function') {
-      throw new Error(`Invalid command module: ${file}`);
-    }
+    if (!command?.data?.name || typeof command.execute !== 'function') continue;
     client.commands.set(command.data.name, command);
   }
 

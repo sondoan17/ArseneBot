@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 
+const { AudioPlayerStatus } = require('@discordjs/voice');
 const { GuildPlayer } = require('../../src/music/GuildPlayer');
 
 function track(title, duration = 60) {
@@ -13,8 +14,9 @@ function createFakeAudioPlayer() {
   player.played = [];
   player.stopped = 0;
   player.paused = false;
-  player.play = (resource) => player.played.push(resource);
-  player.stop = () => { player.stopped += 1; player.emit('idle'); };
+  player.state = { status: AudioPlayerStatus.Idle };
+  player.play = (resource) => { player.state = { status: AudioPlayerStatus.Playing }; player.played.push(resource); };
+  player.stop = () => { player.stopped += 1; player.state = { status: AudioPlayerStatus.Idle }; player.emit('idle'); };
   player.pause = () => { player.paused = true; return true; };
   player.unpause = () => { player.paused = false; return true; };
   return player;
@@ -26,7 +28,7 @@ function createPlayer(overrides = {}) {
   const youtube = {
     createStream: async (current, seekSeconds = 0) => ({ stream: { current, seekSeconds }, type: 'opus' }),
   };
-  const voiceConnection = { destroyed: false, destroy() { this.destroyed = true; } };
+  const voiceConnection = { state: { status: 'ready' }, destroyed: false, destroy() { this.destroyed = true; } };
   const player = new GuildPlayer({
     guildId: 'g1',
     voiceChannelId: 'v1',
@@ -35,7 +37,16 @@ function createPlayer(overrides = {}) {
     voiceConnection,
     youtube,
     createAudioResource: (stream, options) => {
-      const resource = { stream, options, volumeValue: null, volume: { setVolume(value) { resource.volumeValue = value; } } };
+      const resource = {
+        stream,
+        playStream: {
+          destroyed: false,
+          destroy() { this.destroyed = true; },
+        },
+        options,
+        volumeValue: null,
+        volume: { setVolume(value) { resource.volumeValue = value; } },
+      };
       resources.push(resource);
       return resource;
     },
@@ -81,6 +92,33 @@ test('idle with loop queue rotates current to queue tail', async () => {
 
   assert.equal(player.current.title, 'two');
   assert.deepEqual(player.queue.map((item) => item.title), ['one']);
+});
+
+test('enqueue clears stale current when audio player is idle', async () => {
+  const { player, audioPlayer } = createPlayer();
+  await player.enqueue([track('stale')]);
+  audioPlayer.state = { status: AudioPlayerStatus.Idle };
+
+  const result = await player.enqueue([track('fresh')]);
+
+  assert.equal(result.started, true);
+  assert.equal(result.added, 0);
+  assert.equal(player.current.title, 'fresh');
+  assert.deepEqual(player.history.map((item) => item.title), ['stale']);
+});
+
+test('enqueue preserves queued tracks when clearing stale current while idle', async () => {
+  const { player, audioPlayer } = createPlayer();
+  await player.enqueue([track('stale-current'), track('stale-queued')]);
+  audioPlayer.state = { status: AudioPlayerStatus.Idle };
+
+  const result = await player.enqueue([track('fresh')]);
+
+  assert.equal(result.started, false);
+  assert.equal(result.added, 1);
+  assert.equal(player.current, null);
+  assert.deepEqual(player.queue.map((item) => item.title), ['stale-queued', 'fresh']);
+  assert.deepEqual(player.history.map((item) => item.title), ['stale-current']);
 });
 
 test('setVolume updates current audio resource immediately', async () => {
@@ -139,4 +177,30 @@ test('audio error notifies and advances to next track', async () => {
 
   assert.equal(player.current.title, 'two');
   assert.equal(messages.length, 1);
+});
+
+test('destroy stops player and cleans up active stream', async () => {
+  const { player, audioPlayer, resources, voiceConnection } = createPlayer();
+  await player.enqueue([track('one')]);
+
+  player.destroy();
+
+  assert.equal(audioPlayer.stopped > 0, true);
+  assert.equal(resources[0].playStream.destroyed, true);
+  assert.equal(player.currentResource, null);
+  assert.equal(voiceConnection.destroyed, true);
+});
+
+test('enqueue rolls back current/queue when first play fails', async () => {
+  const { player } = createPlayer({
+    youtube: {
+      createStream: async () => {
+        throw new Error('yt fail');
+      },
+    },
+  });
+
+  await assert.rejects(() => player.enqueue([track('one'), track('two')]), /yt fail/);
+  assert.equal(player.current, null);
+  assert.deepEqual(player.queue, []);
 });
