@@ -107,17 +107,17 @@ test('enqueue clears stale current when audio player is idle', async () => {
   assert.deepEqual(player.history.map((item) => item.title), ['stale']);
 });
 
-test('enqueue clears stale current and stale queue when audio player is idle', async () => {
+test('enqueue preserves queued tracks when clearing stale current while idle', async () => {
   const { player, audioPlayer } = createPlayer();
   await player.enqueue([track('stale-current'), track('stale-queued')]);
   audioPlayer.state = { status: AudioPlayerStatus.Idle };
 
   const result = await player.enqueue([track('fresh')]);
 
-  assert.equal(result.started, true);
-  assert.equal(result.added, 0);
-  assert.equal(player.current.title, 'fresh');
-  assert.deepEqual(player.queue.map((item) => item.title), []);
+  assert.equal(result.started, false);
+  assert.equal(result.added, 1);
+  assert.equal(player.current, null);
+  assert.deepEqual(player.queue.map((item) => item.title), ['stale-queued', 'fresh']);
   assert.deepEqual(player.history.map((item) => item.title), ['stale-current']);
 });
 

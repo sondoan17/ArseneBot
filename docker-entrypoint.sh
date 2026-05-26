@@ -22,6 +22,7 @@ with open(cookie_file, 'w', encoding='utf-8') as f:
         value = cookie['value']
         f.write(f'{domain}\t{include_subdomains}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n')
 PY
+  chmod 600 "$cookie_file"
 fi
 
 # Do not auto-run Playwright at boot: it adds noisy logs and can race on the

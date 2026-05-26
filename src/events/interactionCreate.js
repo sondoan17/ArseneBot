@@ -11,7 +11,9 @@ function commandOptionsSummary(interaction) {
   return options.map((option) => {
     const name = option.name || 'unknown';
     const sensitive = /(token|secret|password|pass|cookie|key)/i.test(name);
-    const value = sensitive ? '[REDACTED]' : String(option.value ?? '[complex]').slice(0, 120);
+    const raw = String(option.value ?? '[complex]');
+    const allowValue = /^(id|page|count|limit|index|position|volume|mode)$/i.test(name);
+    const value = sensitive ? '[REDACTED]' : allowValue ? raw.slice(0, 120) : `[len=${raw.length}]`;
     return `${name}=${value}`;
   }).join(' ');
 }

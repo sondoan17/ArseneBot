@@ -17,6 +17,23 @@ function shouldRetry(error) {
   return error instanceof UserFacingMusicError && error.message === TRANSIENT_YOUTUBE_ERROR_MESSAGE;
 }
 
+function safeForLog(value, max = 160) {
+  return String(value ?? '')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/([?&](?:token|auth|key|sig|signature|cookie|oauth)[^=]*=)[^&\s]+/gi, '$1[redacted]')
+    .slice(0, max);
+}
+
+function sanitizeMeta(meta) {
+  if (!meta || typeof meta !== 'object') return {};
+  const sanitized = {};
+  for (const [key, value] of Object.entries(meta)) {
+    if (/raw|token|cookie|secret|auth|key/i.test(key)) continue;
+    sanitized[key] = typeof value === 'string' ? safeForLog(value, 120) : value;
+  }
+  return sanitized;
+}
+
 async function updateStatus(interaction, message) {
   try {
     await interaction.editReply({ embeds: [successEmbed(message)] });
@@ -53,8 +70,8 @@ module.exports = {
 
     const commandStartedAt = Date.now();
     await musicManager.withGuildLock(interaction.guildId, async () => {
-      log.info(interaction.guildId, `User ${interaction.user.id} requested play: ${query}`);
-      log.info(interaction.guildId, `[timing] /play start query=${query}`);
+      log.info(interaction.guildId, `User ${interaction.user.id} requested play: ${safeForLog(query)}`);
+      log.info(interaction.guildId, `[timing] /play start query=${safeForLog(query)}`);
       await updateStatus(interaction, 'Ae đợi tí anh Độ đang tìm bài hát');
 
       let authRefreshed = false;
@@ -108,18 +125,18 @@ module.exports = {
           if (!authRefreshed && isYoutubeAuthError(error)) {
             authRefreshed = true;
             await updateStatus(interaction, 'YouTube đang đòi xác thực, anh Độ đang tự đăng nhập lại...');
-            log.warn(interaction.guildId, `YouTube auth error on /play, refreshing auth once... query=${query} meta=${JSON.stringify(error.meta || {})} cause=${error.cause?.message || error.message}`);
+            log.warn(interaction.guildId, `YouTube auth error on /play, refreshing auth once... query=${safeForLog(query)} meta=${JSON.stringify(sanitizeMeta(error.meta))} cause=${safeForLog(error.cause?.message || error.message)}`);
             await refreshYoutubeAuth(log, interaction.guildId);
             await delay(1500);
             continue;
           }
           if (attempt === 1 && shouldRetry(error)) {
-            log.warn(interaction.guildId, `Transient YouTube error on /play, retrying once... query=${query} meta=${JSON.stringify(error.meta || {})} cause=${error.cause?.message || error.message}`);
+            log.warn(interaction.guildId, `Transient YouTube error on /play, retrying once... query=${safeForLog(query)} meta=${JSON.stringify(sanitizeMeta(error.meta))} cause=${safeForLog(error.cause?.message || error.message)}`);
             await delay(1200);
             continue;
           }
           if (shouldRetry(error) || isYoutubeAuthError(error)) {
-            log.error(interaction.guildId, `Returning YouTube failure to user on /play query=${query} attempt=${attempt} meta=${JSON.stringify(error.meta || {})} cause=${error.cause?.message || error.message}`);
+            log.error(interaction.guildId, `Returning YouTube failure to user on /play query=${safeForLog(query)} attempt=${attempt} meta=${JSON.stringify(sanitizeMeta(error.meta))} cause=${safeForLog(error.cause?.message || error.message)}`);
           }
           throw error;
         }

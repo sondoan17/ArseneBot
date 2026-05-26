@@ -16,9 +16,8 @@ function createClipCommand({ name, description, text, audioPath, clipKey }) {
         return;
       }
 
-      const voiceChannel = requireSameVoiceChannel(interaction, player || undefined);
-
       try {
+        const voiceChannel = requireSameVoiceChannel(interaction, player || undefined);
         const activePlayer = player || musicManager.getOrCreate({
           guild: interaction.guild,
           voiceChannel,

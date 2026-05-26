@@ -74,7 +74,7 @@ class MusicManager {
       if (newState.status === 'destroyed') {
         const currentPlayer = this.get(guild.id);
         if (currentPlayer?.voiceConnection === connection) {
-          this.players.delete(guild.id);
+          currentPlayer.destroy();
           this.log.warn(guild.id, 'Voice connection destroyed; cleaned up player.');
         } else {
           this.log.warn(guild.id, 'Ignored destroyed event from stale voice connection.');

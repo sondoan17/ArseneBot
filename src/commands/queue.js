@@ -16,7 +16,7 @@ module.exports = {
       requireSameVoiceChannel(interaction, player);
       if (!player) return respond(interaction, { embeds: [errorEmbed('Bot chưa phát nhạc trong server này.')], ephemeral: true });
 
-      log?.info?.(interaction.guildId, `[state] /queue current=${player.current?.title || 'none'} queue=${player.queue.length} audio=${player.audioPlayer.state?.status} voice=${player.voiceConnection.state?.status}`);
+      log?.info?.(interaction.guildId, `[state] /queue current=${player.current?.title || 'none'} queue=${player.queue?.length ?? 0} audio=${player.audioPlayer?.state?.status ?? 'unknown'} voice=${player.voiceConnection?.state?.status ?? 'unknown'}`);
       return respond(interaction, { embeds: [queueEmbed(player)] });
     });
   },

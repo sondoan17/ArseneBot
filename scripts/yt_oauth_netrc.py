@@ -53,7 +53,7 @@ def get_fresh_access_token():
     req.add_header('Content-Type', 'application/x-www-form-urlencoded')
     
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             new_tokens = json.loads(resp.read())
     except Exception as e:
         # If refresh fails, try the old token anyway

@@ -1,5 +1,5 @@
 const { EventEmitter } = require('node:events');
-const { createReadStream } = require('node:fs');
+const { createReadStream, existsSync } = require('node:fs');
 const { AudioPlayerStatus, VoiceConnectionStatus, createAudioResource, entersState, StreamType } = require('@discordjs/voice');
 const { UserFacingMusicError } = require('./errors');
 
@@ -48,6 +48,7 @@ class GuildPlayer extends EventEmitter {
     });
     this.audioPlayer.on('error', (error) => {
       this.log.error(this.guildId, 'AudioPlayer error', error);
+      this.cleanupCurrentStream();
       this.handleAudioError(error).catch((handlerError) => this.emit('error', handlerError));
     });
     this.audioPlayer.on(AudioPlayerStatus.Playing, () => {
@@ -90,7 +91,6 @@ class GuildPlayer extends EventEmitter {
     this.cleanupCurrentStream();
     if (this.current) this.history.push(this.current);
     this.current = null;
-    this.queue = [];
   }
 
   async playCurrent(seekSeconds = 0) {
@@ -238,6 +238,12 @@ class GuildPlayer extends EventEmitter {
     if (!this.isIdle()) {
       const error = new UserFacingMusicError('Bot đang phát hoặc còn bài trong hàng đợi.');
       error.code = 'PLAYER_BUSY';
+      throw error;
+    }
+
+    if (!existsSync(filePath)) {
+      const error = new UserFacingMusicError('Không tìm thấy file audio của lệnh này.');
+      error.code = 'CLIP_NOT_FOUND';
       throw error;
     }
 

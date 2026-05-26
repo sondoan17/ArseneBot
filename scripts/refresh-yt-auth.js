@@ -18,6 +18,7 @@ const CHROME_BIN = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || '/usr/lib/chrom
 const TIMEOUT = parseInt(process.env.REFRESH_YT_AUTH_TIMEOUT || '90000', 10);
 const HEADLESS = process.env.REFRESH_YT_AUTH_HEADLESS === 'true';
 const DEBUG_DIR = process.env.REFRESH_YT_AUTH_DEBUG_DIR || '/tmp/yt-auth-debug';
+const DEBUG_ENABLED = process.env.YT_AUTH_DEBUG === '1';
 
 const log = {
   info: (...a) => console.log('[yt-auth]', ...a),
@@ -43,6 +44,7 @@ async function waitVisible(page, selector, timeout = 10000) {
 }
 
 async function debugState(page, label) {
+  if (!DEBUG_ENABLED) return;
   fs.mkdirSync(DEBUG_DIR, { recursive: true });
   const ts = Date.now();
   const base = `${ts}-${safeName(label)}`;
@@ -281,7 +283,6 @@ async function main() {
       locale: 'en-US',
       timezoneId: 'Asia/Ho_Chi_Minh',
       viewport: { width: 1280, height: 720 },
-      ignoreHTTPSErrors: true,
     });
 
     const pages = context.pages();

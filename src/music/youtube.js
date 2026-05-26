@@ -166,16 +166,13 @@ function parseTracks(output, requestedBy) {
 }
 
 function hasCookieAuth() {
-  return Boolean(getCookiesFromBrowserValue() || existsSync(COOKIES_FILE));
-}
-
-function hasChromiumProfile() {
-  return existsSync(CHROMIUM_PROFILE_DIR);
+  return Boolean(COOKIES_FROM_BROWSER || existsSync(COOKIES_FILE));
 }
 
 function getCookiesFromBrowserValue() {
-  if (COOKIES_FROM_BROWSER) return COOKIES_FROM_BROWSER;
-  if (hasChromiumProfile()) return 'chromium';
+  if (!COOKIES_FROM_BROWSER) return null;
+  if (COOKIES_FROM_BROWSER !== 'chromium') return COOKIES_FROM_BROWSER;
+  if (existsSync(COOKIES_FILE) || existsSync(CHROMIUM_PROFILE_DIR)) return 'chromium';
   return null;
 }
 
@@ -197,7 +194,6 @@ function buildExtractorArgs() {
 function buildBaseArgs() {
   const cookiesFromBrowser = getCookiesFromBrowserValue();
   const args = [
-    '--no-check-certificates',
     '--user-agent', USER_AGENT,
     '--extractor-args', buildExtractorArgs(),
     '--buffer-size', '16K',
@@ -259,34 +255,43 @@ function createYoutubeService({ retryDelayMs = 500, runYtDlp = spawnYtDlp, spawn
     const startedAt = Date.now();
     return withRetry(async () => {
       const normalizedQuery = normalizeYoutubeQuery(query);
+      let ytQuery = normalizedQuery;
+      if (!isUrl(normalizedQuery)) ytQuery = `ytsearch1:${normalizedQuery}`;
+
+      try {
+        const args = buildYtDlpArgs(ytQuery);
+        const ytDlpStartedAt = Date.now();
+        const output = await runYtDlp(args);
+        const tracks = parseTracks(output, requestedBy);
+        log?.info?.('-', `[timing] resolveQuery yt-dlp duration=${Date.now() - ytDlpStartedAt}ms query=${ytQuery} tracks=${tracks.length}`);
+        if (tracks.length > 0 || !enableInvidious) {
+          log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=yt-dlp tracks=${tracks.length}`);
+          return tracks;
+        }
+      } catch (error) {
+        if (!enableInvidious) throw error;
+        log?.warn?.('-', `[debug] resolveQuery yt-dlp failed; falling back to Invidious query=${ytQuery} cause=${error.message || error}`);
+      }
+
       const invidiousStartedAt = Date.now();
-      if (enableInvidious) {
-        if (isUrl(normalizedQuery)) {
-          const result = await resolveInvidious(normalizedQuery, requestedBy);
-          log?.info?.('-', `[timing] resolveQuery invidious-url duration=${Date.now() - invidiousStartedAt}ms query=${normalizedQuery}`);
-          if (result && result.length > 0) {
-            log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=invidious-url tracks=${result.length}`);
-            return result;
-          }
-        } else {
-          const results = await searchInvidious(normalizedQuery, requestedBy);
-          log?.info?.('-', `[timing] resolveQuery invidious-search duration=${Date.now() - invidiousStartedAt}ms query=${normalizedQuery}`);
-          if (results.length > 0) {
-            log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=invidious-search tracks=1`);
-            return [results[0]];
-          }
+      if (isUrl(normalizedQuery)) {
+        const result = await resolveInvidious(normalizedQuery, requestedBy);
+        log?.info?.('-', `[timing] resolveQuery invidious-url duration=${Date.now() - invidiousStartedAt}ms query=${normalizedQuery}`);
+        if (result && result.length > 0) {
+          log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=invidious-url tracks=${result.length}`);
+          return result;
+        }
+      } else {
+        const results = await searchInvidious(normalizedQuery, requestedBy);
+        log?.info?.('-', `[timing] resolveQuery invidious-search duration=${Date.now() - invidiousStartedAt}ms query=${normalizedQuery}`);
+        if (results.length > 0) {
+          log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=invidious-search tracks=1`);
+          return [results[0]];
         }
       }
 
-      let ytQuery = normalizedQuery;
-      if (!isUrl(normalizedQuery)) ytQuery = `ytsearch1:${normalizedQuery}`;
-      const args = buildYtDlpArgs(ytQuery);
-      const ytDlpStartedAt = Date.now();
-      const output = await runYtDlp(args);
-      const tracks = parseTracks(output, requestedBy);
-      log?.info?.('-', `[timing] resolveQuery yt-dlp duration=${Date.now() - ytDlpStartedAt}ms query=${ytQuery} tracks=${tracks.length}`);
-      log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=yt-dlp tracks=${tracks.length}`);
-      return tracks;
+      log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=fallback-none tracks=0`);
+      return [];
     }, classifyYoutubeError, {
       phase: 'resolveQuery',
       query,
