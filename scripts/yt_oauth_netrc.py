@@ -28,8 +28,12 @@ def load_json(path):
 
 
 def save_json(path, data):
-    with open(path, 'w') as f:
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
 
 
 def get_fresh_access_token():
