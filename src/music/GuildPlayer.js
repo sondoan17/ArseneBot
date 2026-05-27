@@ -1,4 +1,5 @@
 const { EventEmitter } = require('node:events');
+const { messages } = require('../config/messages');
 const { createReadStream, existsSync } = require('node:fs');
 const { AudioPlayerStatus, VoiceConnectionStatus, createAudioResource, entersState, StreamType } = require('@discordjs/voice');
 const { UserFacingMusicError } = require('./errors');
@@ -164,7 +165,7 @@ class GuildPlayer extends EventEmitter {
     try {
       await entersState(this.voiceConnection, VoiceConnectionStatus.Ready, 15000);
     } catch (error) {
-      throw new UserFacingMusicError('Bot đã join voice nhưng chưa kết nối được tới Discord voice server. Thử đổi voice region hoặc restart bot.', error);
+      throw new UserFacingMusicError(messages.voice.connectionNotReady, error);
     }
   }
 
@@ -188,7 +189,7 @@ class GuildPlayer extends EventEmitter {
       const relatedTrack = await this.youtube.getRelatedTrack?.(finished, finished.requestedBy);
       if (relatedTrack) {
         this.queue.push(relatedTrack);
-        await this.notify(`Tự phát tiếp: **${relatedTrack.title}**`);
+        await this.notify(messages.playback.autoplayNext(relatedTrack.title));
       }
     }
 
@@ -201,7 +202,7 @@ class GuildPlayer extends EventEmitter {
     const failedTrack = this.current;
     this.log.error(this.guildId, 'Audio player error', error);
     if (failedTrack) {
-      await this.notify(`Không thể phát **${failedTrack.title}**, đang bỏ qua bài này.`);
+      await this.notify(messages.playback.failedTrackSkipped(failedTrack.title));
       this.history.push(failedTrack);
     }
     this.current = this.queue.shift() || null;
@@ -260,13 +261,13 @@ class GuildPlayer extends EventEmitter {
 
   async playClip(filePath, metadata = {}) {
     if (!this.isIdle()) {
-      const error = new UserFacingMusicError('Bot đang phát hoặc còn bài trong hàng đợi.');
+      const error = new UserFacingMusicError(messages.playback.currentlyBusy);
       error.code = 'PLAYER_BUSY';
       throw error;
     }
 
     if (!existsSync(filePath)) {
-      const error = new UserFacingMusicError('Không tìm thấy file audio của lệnh này.');
+      const error = new UserFacingMusicError(messages.playback.clipNotFound);
       error.code = 'CLIP_NOT_FOUND';
       throw error;
     }
@@ -294,9 +295,9 @@ class GuildPlayer extends EventEmitter {
   }
 
   async seek(seconds) {
-    if (!this.current) throw new UserFacingMusicError('Không có bài nào đang phát.');
-    if (!Number.isFinite(this.current.duration)) throw new UserFacingMusicError('Bài này không hỗ trợ seek vì không có thời lượng xác định.');
-    if (seconds > this.current.duration) throw new UserFacingMusicError('Vị trí seek vượt quá thời lượng bài hát.');
+    if (!this.current) throw new UserFacingMusicError(messages.playback.noCurrentTrack);
+    if (!Number.isFinite(this.current.duration)) throw new UserFacingMusicError(messages.playback.seekUnsupported);
+    if (seconds > this.current.duration) throw new UserFacingMusicError(messages.playback.seekOutOfRange);
     await this.playCurrent(seconds);
   }
 

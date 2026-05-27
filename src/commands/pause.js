@@ -1,16 +1,17 @@
+const { messages } = require('../config/messages');
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 const { requireSameVoiceChannel } = require('./voiceAccess');
 
 module.exports = {
-  data: new SlashCommandBuilder().setName('pause').setDescription('Tạm dừng bài hiện tại.'),
+  data: new SlashCommandBuilder().setName('pause').setDescription(messages.commands.pause.description),
   async execute(interaction, { musicManager }) {
     await musicManager.withGuildLock(interaction.guildId, async () => {
       const player = musicManager.get(interaction.guildId);
       requireSameVoiceChannel(interaction, player);
-      if (!player?.current) return interaction.reply({ embeds: [errorEmbed('Không có bài nào đang phát.')], ephemeral: true });
+      if (!player?.current) return interaction.reply({ embeds: [errorEmbed(messages.playback.noCurrentTrack)], ephemeral: true });
       player.pause();
-      return interaction.reply({ embeds: [successEmbed('Đã tạm dừng.')] });
+      return interaction.reply({ embeds: [successEmbed(messages.playback.paused)] });
     });
   },
 };

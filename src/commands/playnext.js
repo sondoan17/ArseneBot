@@ -1,10 +1,11 @@
+const { messages } = require('../config/messages');
 const { SlashCommandBuilder, PermissionsBitField } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 const { UserFacingMusicError, isYoutubeAuthError } = require('../music/errors');
 const { refreshYoutubeAuth } = require('../music/refreshYoutubeAuth');
 const { requireSameVoiceChannel } = require('./voiceAccess');
 
-const TRANSIENT_YOUTUBE_ERROR_MESSAGE = 'Không thể tải dữ liệu từ YouTube. Vui lòng thử lại sau.';
+const TRANSIENT_YOUTUBE_ERROR_MESSAGE = messages.youtube.transientError;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -42,21 +43,21 @@ async function updateStatus(interaction, message) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('playnext')
-    .setDescription('Thêm nhạc vào đầu hàng đợi.')
-    .addStringOption((option) => option.setName('query').setDescription('URL hoặc từ khóa YouTube').setRequired(true)),
+    .setDescription(messages.commands.playnext.description)
+    .addStringOption((option) => option.setName('query').setDescription(messages.commands.playnext.queryDescription).setRequired(true)),
   async execute(interaction, { youtube, musicManager, log }) {
     const query = interaction.options.getString('query', true);
     const voiceChannel = requireSameVoiceChannel(interaction);
 
     const permissions = voiceChannel.permissionsFor(interaction.guild.members.me);
     if (!permissions.has(PermissionsBitField.Flags.Connect) || !permissions.has(PermissionsBitField.Flags.Speak)) {
-      await interaction.editReply({ embeds: [errorEmbed('Bot cần quyền Join và Speak trong voice channel này.')] });
+      await interaction.editReply({ embeds: [errorEmbed(messages.voice.botMissingPermissions)] });
       return;
     }
 
     await musicManager.withGuildLock(interaction.guildId, async () => {
       log.info(interaction.guildId, `User ${interaction.user.id} requested playnext: ${safeForLog(query)}`);
-      await updateStatus(interaction, 'Ae đợi tí anh Độ đang tìm bài để chèn lên đầu queue');
+      await updateStatus(interaction, messages.playnext.searching);
 
       let authRefreshed = false;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -66,7 +67,7 @@ module.exports = {
             username: interaction.user.username,
           });
           if (tracks.length === 0) {
-            await interaction.editReply({ embeds: [errorEmbed('Không tìm thấy kết quả phù hợp.')] });
+            await interaction.editReply({ embeds: [errorEmbed(messages.play.noResults)] });
             return;
           }
 
@@ -75,7 +76,7 @@ module.exports = {
             player = musicManager.getOrCreate({ guild: interaction.guild, voiceChannel, textChannelId: interaction.channelId });
           } catch (error) {
             if (error.code === 'PLAYER_IN_DIFFERENT_CHANNEL') {
-              await interaction.editReply({ embeds: [errorEmbed('Bot đang phát ở channel khác.')] });
+              await interaction.editReply({ embeds: [errorEmbed(messages.voice.botInDifferentChannel)] });
               return;
             }
             throw error;
@@ -83,16 +84,16 @@ module.exports = {
 
           const result = await player.enqueueNext(tracks);
           const message = result.started
-            ? `Đang phát: **${tracks[0].title}**`
+            ? messages.playnext.nowPlaying(tracks[0].title)
             : tracks.length === 1
-              ? `Đã chèn lên đầu hàng đợi: **${tracks[0].title}**`
-              : `Đã chèn **${tracks.length}** bài lên đầu hàng đợi. Bài đầu: **${tracks[0].title}**`;
+              ? messages.playnext.queuedOne(tracks[0].title)
+              : messages.playnext.queuedMany(tracks.length, tracks[0].title);
           await interaction.editReply({ embeds: [successEmbed(message)] });
           return;
         } catch (error) {
           if (!authRefreshed && isYoutubeAuthError(error)) {
             authRefreshed = true;
-            await updateStatus(interaction, 'YouTube đang đòi xác thực, anh Độ đang tự đăng nhập lại...');
+            await updateStatus(interaction, messages.play.authRefreshing);
             log.warn(interaction.guildId, `YouTube auth error on /playnext, refreshing auth once... query=${safeForLog(query)} meta=${JSON.stringify(sanitizeMeta(error.meta))} cause=${safeForLog(error.cause?.message || error.message)}`);
             await refreshYoutubeAuth(log, interaction.guildId);
             await delay(1500);

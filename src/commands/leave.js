@@ -1,3 +1,4 @@
+const { messages } = require('../config/messages');
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 const { requireSameVoiceChannel } = require('./voiceAccess');
@@ -8,7 +9,7 @@ async function safeRespond(interaction, payload) {
 }
 
 module.exports = {
-  data: new SlashCommandBuilder().setName('leave').setDescription('Rời voice channel.'),
+  data: new SlashCommandBuilder().setName('leave').setDescription(messages.commands.leave.description),
   async execute(interaction, { musicManager }) {
     await musicManager.withGuildLock(interaction.guildId, async () => {
       const player = musicManager.get(interaction.guildId);
@@ -17,12 +18,12 @@ module.exports = {
       const destroyed = musicManager.destroy(interaction.guildId);
       if (!destroyed) {
         await safeRespond(interaction, {
-          embeds: [errorEmbed('Bot không ở trong voice channel nào.')],
+          embeds: [errorEmbed(messages.voice.botNotInAnyChannel)],
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
-      await safeRespond(interaction, { embeds: [successEmbed('Đã rời voice channel.')] });
+      await safeRespond(interaction, { embeds: [successEmbed(messages.voice.leftChannel)] });
     });
   },
 };

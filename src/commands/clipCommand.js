@@ -1,3 +1,4 @@
+const { messages } = require('../config/messages');
 const { SlashCommandBuilder } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
 const { requireSameVoiceChannel } = require('./voiceAccess');
@@ -31,7 +32,7 @@ function createClipCommand({ name, description, text, audioPath, clipKey }) {
         await interaction.editReply({ embeds: [successEmbed(text)] });
       } catch (error) {
         if (error.code === 'PLAYER_IN_DIFFERENT_CHANNEL') {
-          await interaction.editReply({ embeds: [errorEmbed('Bot đang phát ở channel khác.')] });
+          await interaction.editReply({ embeds: [errorEmbed(messages.voice.botInDifferentChannel)] });
           return;
         }
         throw error;

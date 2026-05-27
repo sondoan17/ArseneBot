@@ -6,6 +6,7 @@ const stopCommand = require('../src/commands/stop');
 const leaveCommand = require('../src/commands/leave');
 const queueCommand = require('../src/commands/queue');
 const nowPlayingCommand = require('../src/commands/nowplaying');
+const { messages } = require('../src/config/messages');
 const { UserFacingMusicError } = require('../src/music/errors');
 
 function createVoiceInteraction({ memberChannelId = 'v1', botChannelId = 'v1', botChannelName = 'music-room' } = {}) {
@@ -67,7 +68,7 @@ test('play rejects users outside the bot voice channel', async () => {
   await assert.rejects(
     playCommand.execute(interaction, context),
     (error) => error instanceof UserFacingMusicError
-      && error.message === 'Bạn cần vào đúng voice channel với bot để dùng lệnh này. Bot hiện đang ở #music-room.',
+      && error.message === messages.voice.sameChannelRequired('#music-room'),
   );
 });
 
@@ -83,7 +84,7 @@ test('stop rejects users outside the bot voice channel', async () => {
   await assert.rejects(
     stopCommand.execute(interaction, context),
     (error) => error instanceof UserFacingMusicError
-      && error.message === 'Bạn cần vào đúng voice channel với bot để dùng lệnh này. Bot hiện đang ở #music-room.',
+      && error.message === messages.voice.sameChannelRequired('#music-room'),
   );
 });
 
@@ -98,7 +99,7 @@ test('queue rejects users outside the bot voice channel', async () => {
   await assert.rejects(
     queueCommand.execute(interaction, context),
     (error) => error instanceof UserFacingMusicError
-      && error.message === 'Bạn cần vào đúng voice channel với bot để dùng lệnh này. Bot hiện đang ở #music-room.',
+      && error.message === messages.voice.sameChannelRequired('#music-room'),
   );
 });
 
@@ -113,7 +114,7 @@ test('nowplaying rejects users outside the bot voice channel', async () => {
   await assert.rejects(
     nowPlayingCommand.execute(interaction, context),
     (error) => error instanceof UserFacingMusicError
-      && error.message === 'Bạn cần vào đúng voice channel với bot để dùng lệnh này. Bot hiện đang ở #music-room.',
+      && error.message === messages.voice.sameChannelRequired('#music-room'),
   );
 });
 
@@ -135,5 +136,5 @@ test('leave allows users in the same voice channel as the bot', async () => {
 
   assert.equal(destroyedGuildId, 'g1');
   assert.equal(interaction._replies.length, 1);
-  assert.match(interaction._replies[0].embeds[0].data.description, /Đã rời voice channel/);
+  assert.equal(interaction._replies[0].embeds[0].data.description, messages.voice.leftChannel);
 });

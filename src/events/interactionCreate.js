@@ -1,4 +1,5 @@
 const { Events } = require('discord.js');
+const { messages } = require('../config/messages');
 const { errorEmbed, successEmbed } = require('../ui/embeds');
 const { nowPlayingMessage, MUSIC_CONTROL_IDS } = require('../ui/musicControls');
 const { UserFacingMusicError } = require('../music/errors');
@@ -28,7 +29,7 @@ async function handleMusicControl(interaction, context) {
     requireSameVoiceChannel(interaction, player);
 
     if (!player) {
-      await interaction.reply({ embeds: [errorEmbed('Bot chưa phát nhạc trong server này.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed(messages.playback.noPlayerInGuild)], ephemeral: true });
       return;
     }
 
@@ -36,7 +37,7 @@ async function handleMusicControl(interaction, context) {
       case MUSIC_CONTROL_IDS.back: {
         const previous = await player.back();
         if (!previous || !player.current) {
-          await interaction.reply({ embeds: [errorEmbed('Không có bài nào trước đó để phát lại.')], ephemeral: true });
+          await interaction.reply({ embeds: [errorEmbed(messages.playback.noPreviousTrack)], ephemeral: true });
           return;
         }
         await interaction.update(nowPlayingMessage(player.current, player));
@@ -44,7 +45,7 @@ async function handleMusicControl(interaction, context) {
       }
       case MUSIC_CONTROL_IDS.pause: {
         if (!player.current) {
-          await interaction.reply({ embeds: [errorEmbed('Không có bài nào đang phát.')], ephemeral: true });
+          await interaction.reply({ embeds: [errorEmbed(messages.playback.noCurrentTrack)], ephemeral: true });
           return;
         }
         player.pause();
@@ -53,7 +54,7 @@ async function handleMusicControl(interaction, context) {
       }
       case MUSIC_CONTROL_IDS.resume: {
         if (!player.current) {
-          await interaction.reply({ embeds: [errorEmbed('Không có bài nào đang phát.')], ephemeral: true });
+          await interaction.reply({ embeds: [errorEmbed(messages.playback.noCurrentTrack)], ephemeral: true });
           return;
         }
         player.resume();
@@ -62,24 +63,24 @@ async function handleMusicControl(interaction, context) {
       }
       case MUSIC_CONTROL_IDS.skip: {
         if (!player.current) {
-          await interaction.reply({ embeds: [errorEmbed('Không có bài nào đang phát.')], ephemeral: true });
+          await interaction.reply({ embeds: [errorEmbed(messages.playback.noCurrentTrack)], ephemeral: true });
           return;
         }
         const currentTitle = player.current.title;
         player.skip();
         const payload = player.current
           ? nowPlayingMessage(player.current, player)
-          : { embeds: [successEmbed(`Đã bỏ bài hiện tại: **${currentTitle}**`)], components: [] };
+          : { embeds: [successEmbed(messages.playback.skippedQueueEnded(currentTitle))], components: [] };
         await interaction.update(payload);
         return;
       }
       case MUSIC_CONTROL_IDS.stop: {
         player.stop();
-        await interaction.update({ embeds: [successEmbed('Đã dừng phát và xóa hàng đợi.')], components: [] });
+        await interaction.update({ embeds: [successEmbed(messages.playback.stopped)], components: [] });
         return;
       }
       default:
-        await interaction.reply({ embeds: [errorEmbed('Nút điều khiển không hợp lệ.')], ephemeral: true });
+        await interaction.reply({ embeds: [errorEmbed(messages.common.invalidControlButton)], ephemeral: true });
     }
   });
 }
@@ -92,7 +93,7 @@ module.exports = {
         await handleMusicControl(interaction, context);
       } catch (error) {
         context.log.error(interaction.guildId, `[button] error ${interaction.customId}`, error);
-        const message = error instanceof UserFacingMusicError ? error.message : 'Có lỗi xảy ra, đã ghi log.';
+        const message = error instanceof UserFacingMusicError ? error.message : messages.common.genericError;
         const payload = { embeds: [errorEmbed(message)], ephemeral: true };
         try {
           if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
@@ -130,7 +131,7 @@ module.exports = {
       context.log.info(interaction.guildId, `[command] end /${interaction.commandName} duration=${Date.now() - startedAt}ms deferred=${interaction.deferred} replied=${interaction.replied}`);
     } catch (error) {
       context.log.error(interaction.guildId, `[command] error /${interaction.commandName} duration=${Date.now() - startedAt}ms`, error);
-      const message = error instanceof UserFacingMusicError ? error.message : 'Có lỗi xảy ra, đã ghi log.';
+      const message = error instanceof UserFacingMusicError ? error.message : messages.common.genericError;
       const payload = { embeds: [errorEmbed(message)] };
       try {
         if (interaction.deferred || interaction.replied) await interaction.editReply(payload);
