@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const playCommand = require('../src/commands/play');
+const { messages } = require('../src/config/messages');
 const { UserFacingMusicError } = require('../src/music/errors');
 
 function createInteraction() {
@@ -33,13 +34,15 @@ test('play retries once on transient youtube error and then succeeds', async () 
     youtube: {
       resolveQuery: async () => {
         calls += 1;
-        if (calls === 1) throw new UserFacingMusicError('Không thể tải dữ liệu từ YouTube. Vui lòng thử lại sau.');
+        if (calls === 1) throw new UserFacingMusicError(messages.youtube.transientError);
         return [{ title: 'Billie Jean', url: 'https://youtube.com/watch?v=1' }];
       },
     },
     musicManager: {
       withGuildLock: async (_guildId, task) => task(),
-      getOrCreate: () => ({ enqueue: async () => ({ started: true }) }),
+      getOrCreate: () => ({
+        enqueue: async () => ({ started: true }),
+      }),
     },
     log: { info() {}, warn() {}, error() {} },
   };
@@ -48,6 +51,6 @@ test('play retries once on transient youtube error and then succeeds', async () 
 
   assert.equal(calls, 2);
   assert.ok(interaction._replies.length >= 3);
-  assert.match(interaction._replies[0].embeds[0].data.description, /Ae đợi tí anh Độ đang tìm bài hát/);
-  assert.match(interaction._replies[interaction._replies.length - 1].embeds[0].data.description, /Đang phát/);
+  assert.equal(interaction._replies[0].embeds[0].data.description, messages.play.searching);
+  assert.equal(interaction._replies[interaction._replies.length - 1].embeds[0].data.description, messages.play.nowPlaying('Billie Jean'));
 });

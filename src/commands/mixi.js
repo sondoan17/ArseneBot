@@ -1,9 +1,10 @@
 const { createClipCommand } = require('./clipCommand');
+const { messages } = require('../config/messages');
 
 module.exports = createClipCommand({
   name: 'mixi',
-  description: 'mixi - nà ná na na a độ mixi.',
-  text: 'Nà ná na na anh Độ Mixi',
+  description: messages.commands.mixi.description,
+  text: messages.clip.mixi,
   audioPath: '/media/audio/an-do-mixi.mp3',
   clipKey: 'mixi',
 });

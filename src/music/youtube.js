@@ -4,13 +4,16 @@ const { PassThrough } = require('node:stream');
 const { StreamType } = require('@discordjs/voice');
 const { createTrack } = require('./Track');
 const { classifyYoutubeError } = require('./errors');
+const {
+  CHROMIUM_PROFILE_DIR,
+  YOUTUBE_COOKIE_FILE: COOKIES_FILE,
+  YTDLP_COOKIES_FROM_BROWSER: DEFAULT_COOKIES_FROM_BROWSER,
+} = require('./authConfig');
 
 const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
-const COOKIES_FILE = process.env.YOUTUBE_COOKIE_FILE || '/app/cookies.txt';
 const JS_RUNTIME = process.env.YTDLP_JS_RUNTIME || 'node';
 const ENABLE_JS_RUNTIME = process.env.YTDLP_ENABLE_JS_RUNTIME === '1';
-const COOKIES_FROM_BROWSER = process.env.YTDLP_COOKIES_FROM_BROWSER || null;
-const CHROMIUM_PROFILE_DIR = process.env.CHROMIUM_PROFILE || '/home/bot/.config/chromium';
+const COOKIES_FROM_BROWSER = DEFAULT_COOKIES_FROM_BROWSER;
 const PO_TOKEN = process.env.YTDLP_PO_TOKEN || null;
 const VISITOR_DATA = process.env.YTDLP_VISITOR_DATA || null;
 const USER_AGENT = process.env.YTDLP_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -258,6 +261,9 @@ function createYoutubeService({ retryDelayMs = 500, runYtDlp = spawnYtDlp, spawn
       let ytQuery = normalizedQuery;
       if (!isUrl(normalizedQuery)) ytQuery = `ytsearch1:${normalizedQuery}`;
 
+      let ytDlpError = null;
+
+      // --- yt-dlp ---
       try {
         const args = buildYtDlpArgs(ytQuery);
         const ytDlpStartedAt = Date.now();
@@ -269,10 +275,12 @@ function createYoutubeService({ retryDelayMs = 500, runYtDlp = spawnYtDlp, spawn
           return tracks;
         }
       } catch (error) {
-        if (!enableInvidious) throw error;
+        if (!enableInvidious) throw classifyYoutubeError(error, { phase: 'resolveQuery', query: normalizedQuery });
+        ytDlpError = error;
         log?.warn?.('-', `[debug] resolveQuery yt-dlp failed; falling back to Invidious query=${ytQuery} cause=${error.message || error}`);
       }
 
+      // --- Invidious fallback ---
       const invidiousStartedAt = Date.now();
       if (isUrl(normalizedQuery)) {
         const result = await resolveInvidious(normalizedQuery, requestedBy);
@@ -290,11 +298,32 @@ function createYoutubeService({ retryDelayMs = 500, runYtDlp = spawnYtDlp, spawn
         }
       }
 
+      // --- Both failed: throw the yt-dlp error so callers can detect auth issues ---
+      if (ytDlpError) {
+        throw classifyYoutubeError(ytDlpError, {
+          phase: 'resolveQuery',
+          query,
+          requestedById: requestedBy?.id || null,
+          requestedByUsername: requestedBy?.username || null,
+        });
+      }
+
       log?.info?.('-', `[timing] resolveQuery total duration=${Date.now() - startedAt}ms source=fallback-none tracks=0`);
       return [];
+    });
+  }
+
+  async function getRelatedTrack(track, requestedBy = track?.requestedBy) {
+    if (!track?.title) return null;
+
+    return withRetry(async () => {
+      const args = buildYtDlpArgs(`ytsearch5:${track.title}`);
+      const output = await runYtDlp(args);
+      const tracks = parseTracks(output, requestedBy).filter((candidate) => candidate.url && candidate.url !== track.url);
+      return tracks[0] || null;
     }, classifyYoutubeError, {
-      phase: 'resolveQuery',
-      query,
+      phase: 'getRelatedTrack',
+      query: track?.title || null,
       requestedById: requestedBy?.id || null,
       requestedByUsername: requestedBy?.username || null,
     });
@@ -412,7 +441,7 @@ function createYoutubeService({ retryDelayMs = 500, runYtDlp = spawnYtDlp, spawn
     // Cookies are now handled by entrypoint script writing /app/cookies.txt
   }
 
-  return { resolveQuery, createStream, setYoutubeCookie };
+  return { resolveQuery, createStream, getRelatedTrack, setYoutubeCookie };
 }
 
 module.exports = { createYoutubeService };
