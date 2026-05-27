@@ -1,6 +1,6 @@
 const { Events } = require('discord.js');
 const { messages } = require('../config/messages');
-const { errorEmbed, successEmbed } = require('../ui/embeds');
+const { errorEmbed } = require('../ui/embeds');
 const { nowPlayingMessage, MUSIC_CONTROL_IDS } = require('../ui/musicControls');
 const { UserFacingMusicError } = require('../music/errors');
 const { requireSameVoiceChannel } = require('../commands/voiceAccess');
@@ -40,7 +40,7 @@ async function handleMusicControl(interaction, context) {
           await interaction.reply({ embeds: [errorEmbed(messages.playback.noPreviousTrack)], ephemeral: true });
           return;
         }
-        await interaction.update(nowPlayingMessage(player.current, player));
+        await interaction.deferUpdate();
         return;
       }
       case MUSIC_CONTROL_IDS.pause: {
@@ -71,8 +71,8 @@ async function handleMusicControl(interaction, context) {
         return;
       }
       case MUSIC_CONTROL_IDS.stop: {
+        await interaction.deferUpdate();
         player.stop();
-        await interaction.update({ embeds: [successEmbed(messages.playback.stopped)], components: [] });
         return;
       }
       default:
