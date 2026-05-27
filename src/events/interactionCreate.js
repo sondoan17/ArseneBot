@@ -66,12 +66,8 @@ async function handleMusicControl(interaction, context) {
           await interaction.reply({ embeds: [errorEmbed(messages.playback.noCurrentTrack)], ephemeral: true });
           return;
         }
-        const currentTitle = player.current.title;
+        await interaction.deferUpdate();
         player.skip();
-        const payload = player.current
-          ? nowPlayingMessage(player.current, player)
-          : { embeds: [successEmbed(messages.playback.skippedQueueEnded(currentTitle))], components: [] };
-        await interaction.update(payload);
         return;
       }
       case MUSIC_CONTROL_IDS.stop: {

@@ -25,6 +25,7 @@ function createFakeAudioPlayer() {
 function createPlayer(overrides = {}) {
   const audioPlayer = createFakeAudioPlayer();
   const resources = [];
+  const sentMessages = [];
   const youtube = {
     createStream: async (current, seekSeconds = 0) => ({ stream: { current, seekSeconds }, type: 'opus' }),
   };
@@ -52,12 +53,20 @@ function createPlayer(overrides = {}) {
     },
     setTimeoutFn: (fn, ms) => ({ fn, ms }),
     clearTimeoutFn: (timer) => { timer.cleared = true; },
-    notify: async () => {},
+    notify: async (message) => {
+      const sentMessage = {
+        payload: message,
+        deleted: false,
+        async delete() { this.deleted = true; },
+      };
+      sentMessages.push(sentMessage);
+      return sentMessage;
+    },
     log: { info() {}, warn() {}, error() {} },
     onDestroy: () => {},
     ...overrides,
   });
-  return { player, audioPlayer, voiceConnection, resources };
+  return { player, audioPlayer, voiceConnection, resources, sentMessages };
 }
 
 test('enqueue starts first track and queues the rest', async () => {
@@ -72,7 +81,7 @@ test('enqueue starts first track and queues the rest', async () => {
 });
 
 test('idle event advances exactly once', async () => {
-  const { player, audioPlayer } = createPlayer();
+  const { player, audioPlayer, sentMessages } = createPlayer();
   await player.enqueue([track('one'), track('two'), track('three')]);
 
   audioPlayer.emit('idle');
@@ -81,6 +90,9 @@ test('idle event advances exactly once', async () => {
   assert.deepEqual(player.history.map((item) => item.title), ['one']);
   assert.equal(player.current.title, 'two');
   assert.deepEqual(player.queue.map((item) => item.title), ['three']);
+  assert.equal(sentMessages.length, 2);
+  assert.equal(sentMessages[0].deleted, true);
+  assert.equal(sentMessages[1].deleted, false);
 });
 
 test('idle with loop queue rotates current to queue tail', async () => {
@@ -92,6 +104,24 @@ test('idle with loop queue rotates current to queue tail', async () => {
 
   assert.equal(player.current.title, 'two');
   assert.deepEqual(player.queue.map((item) => item.title), ['one']);
+});
+
+test('skip advances to the next track without replaying the old resource', async () => {
+  const { player, audioPlayer, resources, sentMessages } = createPlayer();
+  await player.enqueue([track('one'), track('two')]);
+
+  const firstResource = resources[0];
+  player.skip();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(player.current.title, 'two');
+  assert.equal(audioPlayer.played.length, 2);
+  assert.equal(audioPlayer.played[1], resources[1]);
+  assert.notEqual(audioPlayer.played[1], firstResource);
+  assert.equal(firstResource.playStream.destroyed, true);
+  assert.equal(sentMessages.length, 2);
+  assert.equal(sentMessages[0].deleted, true);
+  assert.equal(sentMessages[1].deleted, false);
 });
 
 test('enqueue clears stale current when audio player is idle', async () => {
@@ -152,7 +182,10 @@ test('autoplay adds a related track when queue runs out', async () => {
       createStream: async (current, seekSeconds = 0) => ({ stream: { current, seekSeconds }, type: 'opus' }),
       getRelatedTrack: async () => track('related'),
     },
-    notify: async (message) => notified.push(message),
+    notify: async (message) => {
+      notified.push(message);
+      return { deleted: false, async delete() { this.deleted = true; } };
+    },
   });
   await player.enqueue([track('one')]);
   player.setAutoplayEnabled(true);
@@ -161,7 +194,7 @@ test('autoplay adds a related track when queue runs out', async () => {
 
   assert.equal(player.current.title, 'related');
   assert.deepEqual(player.history.map((item) => item.title), ['one']);
-  assert.equal(notified[0], 'Tự phát tiếp: **related**');
+  assert.equal(notified.find((item) => typeof item === 'string'), 'Tự phát tiếp: **related**');
 });
 
 test('setVolume updates current audio resource immediately', async () => {
@@ -196,13 +229,14 @@ test('remove uses one-based queue index', async () => {
 
 test('empty queue starts idle timer and enqueue clears it', async () => {
   let clearCount = 0;
-  const { player } = createPlayer({ clearTimeoutFn: () => { clearCount += 1; } });
+  const { player, sentMessages } = createPlayer({ clearTimeoutFn: () => { clearCount += 1; } });
   await player.enqueue([track('one')]);
 
   await player.handleIdle();
 
   assert.equal(player.current, null);
   assert.equal(player.idleTimer.ms, 5 * 60 * 1000);
+  assert.equal(sentMessages[0].deleted, true);
 
   await player.enqueue([track('two')]);
 
@@ -211,15 +245,20 @@ test('empty queue starts idle timer and enqueue clears it', async () => {
 });
 
 test('audio error notifies and advances to next track', async () => {
-  const messages = [];
-  const { player, audioPlayer } = createPlayer({ notify: async (message) => messages.push(message) });
+  const notifications = [];
+  const { player, audioPlayer } = createPlayer({
+    notify: async (message) => {
+      notifications.push(message);
+      return { deleted: false, async delete() { this.deleted = true; } };
+    },
+  });
   await player.enqueue([track('one'), track('two')]);
 
   audioPlayer.emit('error', new Error('stream died'));
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(player.current.title, 'two');
-  assert.equal(messages.length, 1);
+  assert.equal(notifications.filter((item) => typeof item === 'string').length, 1);
 });
 
 test('destroy stops player and cleans up active stream', async () => {

@@ -96,7 +96,8 @@ class MusicManager {
 
   async notifyTextChannel(textChannelId, message) {
     const channel = await this.client?.channels.fetch(textChannelId).catch(() => null);
-    if (channel?.isTextBased()) await channel.send(message);
+    if (!channel?.isTextBased()) return null;
+    return channel.send(message);
   }
 
   destroy(guildId) {

@@ -1,7 +1,6 @@
 const { messages } = require('../config/messages');
 const { SlashCommandBuilder, PermissionsBitField } = require('discord.js');
 const { successEmbed, errorEmbed } = require('../ui/embeds');
-const { nowPlayingMessage } = require('../ui/musicControls');
 const { UserFacingMusicError, isYoutubeAuthError } = require('../music/errors');
 const { refreshYoutubeAuth } = require('../music/refreshYoutubeAuth');
 const { requireSameVoiceChannel } = require('./voiceAccess');
@@ -106,7 +105,7 @@ module.exports = {
             );
           }
           log.info(interaction.guildId, `[reply] /play editReply-start attempt=${attempt} result=${result.started ? 'started' : 'queued'} deferred=${interaction.deferred} replied=${interaction.replied}`);
-          await interaction.editReply(result.started ? nowPlayingMessage(tracks[0], player) : { embeds: [successEmbed(message)] });
+          await interaction.editReply({ embeds: [successEmbed(message)] });
           log.info(interaction.guildId, `[reply] /play editReply-ok attempt=${attempt} result=${result.started ? 'started' : 'queued'} deferred=${interaction.deferred} replied=${interaction.replied}`);
           log.info(interaction.guildId, `[timing] /play total duration=${Date.now() - commandStartedAt}ms attempt=${attempt} result=${result.started ? 'started' : 'queued'}`);
           return;

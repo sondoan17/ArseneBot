@@ -2,6 +2,7 @@ const { EventEmitter } = require('node:events');
 const { messages } = require('../config/messages');
 const { createReadStream, existsSync } = require('node:fs');
 const { AudioPlayerStatus, VoiceConnectionStatus, createAudioResource, entersState, StreamType } = require('@discordjs/voice');
+const { nowPlayingMessage } = require('../ui/musicControls');
 const { UserFacingMusicError } = require('./errors');
 
 class GuildPlayer extends EventEmitter {
@@ -43,6 +44,7 @@ class GuildPlayer extends EventEmitter {
     this.currentResource = null;
     this.isLoading = false;
     this.pendingSkip = false;
+    this.nowPlayingMessageRef = null;
 
     this.audioPlayer.on(AudioPlayerStatus.Idle, () => {
       this.log.info(this.guildId, 'AudioPlayer → idle');
@@ -110,6 +112,7 @@ class GuildPlayer extends EventEmitter {
     if (!this.current) return;
     const playStartedAt = Date.now();
     this.isLoading = true;
+    this.cleanupCurrentStream();
     try {
       const voiceReadyStartedAt = Date.now();
       await this.waitForVoiceReady();
@@ -136,6 +139,7 @@ class GuildPlayer extends EventEmitter {
       this.audioPlayer.play(resource);
       this.log.info(this.guildId, `After play(), player state=${this.audioPlayer.state?.status}`);
       this.log.info(this.guildId, `[timing] playCurrent total duration=${Date.now() - playStartedAt}ms track=${this.current.title}`);
+      if (seekSeconds === 0) await this.publishNowPlayingMessage();
     } finally {
       this.isLoading = false;
     }
@@ -172,6 +176,7 @@ class GuildPlayer extends EventEmitter {
   async handleIdle() {
     this.log.info(this.guildId, `handleIdle called, current=${this.current?.title}, loop=${this.loopMode}, queue=${this.queue.length}`);
     if (!this.current) {
+      await this.clearNowPlayingMessage();
       this.startIdleTimer();
       return;
     }
@@ -182,6 +187,8 @@ class GuildPlayer extends EventEmitter {
     }
 
     const finished = this.current;
+    this.cleanupCurrentStream();
+    await this.clearNowPlayingMessage();
     if (this.loopMode === 'queue') this.queue.push(finished);
     else this.history.push(finished);
 
@@ -201,6 +208,7 @@ class GuildPlayer extends EventEmitter {
   async handleAudioError(error) {
     const failedTrack = this.current;
     this.log.error(this.guildId, 'Audio player error', error);
+    await this.clearNowPlayingMessage();
     if (failedTrack) {
       await this.notify(messages.playback.failedTrackSkipped(failedTrack.title));
       this.history.push(failedTrack);
@@ -221,6 +229,7 @@ class GuildPlayer extends EventEmitter {
   stop() {
     this.queue = [];
     this.current = null;
+    this.clearNowPlayingMessage().catch(() => {});
     this.cleanupCurrentStream();
     this.audioPlayer.stop(true);
     this.startIdleTimer();
@@ -318,6 +327,33 @@ class GuildPlayer extends EventEmitter {
     return previous;
   }
 
+  setNowPlayingMessageRef(messageRef) {
+    this.nowPlayingMessageRef = messageRef || null;
+  }
+
+  async publishNowPlayingMessage() {
+    if (!this.current) return null;
+    await this.clearNowPlayingMessage();
+    const sentMessage = await this.notify(nowPlayingMessage(this.current, this));
+    this.nowPlayingMessageRef = sentMessage || null;
+    return sentMessage;
+  }
+
+  async clearNowPlayingMessage() {
+    if (!this.nowPlayingMessageRef?.delete) {
+      this.nowPlayingMessageRef = null;
+      return;
+    }
+
+    const messageRef = this.nowPlayingMessageRef;
+    this.nowPlayingMessageRef = null;
+    try {
+      await messageRef.delete();
+    } catch (error) {
+      this.log.warn(this.guildId, `Failed to delete now playing message: ${error.code || error.message}`);
+    }
+  }
+
   startIdleTimer() {
     this.clearIdleTimer();
     this.idleTimer = this.setTimeoutFn(() => this.destroy(), 5 * 60 * 1000);
@@ -333,6 +369,7 @@ class GuildPlayer extends EventEmitter {
     this.clearIdleTimer();
     this.queue = [];
     this.current = null;
+    this.clearNowPlayingMessage().catch(() => {});
     this.cleanupCurrentStream();
     this.audioPlayer.stop(true);
     if (this.voiceConnection.state?.status !== 'destroyed') this.voiceConnection.destroy();

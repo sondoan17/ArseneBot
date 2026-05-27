@@ -3,7 +3,6 @@ const assert = require('node:assert/strict');
 
 const playCommand = require('../src/commands/play');
 const { messages } = require('../src/config/messages');
-const { MUSIC_CONTROL_IDS } = require('../src/ui/musicControls');
 const { UserFacingMusicError } = require('../src/music/errors');
 
 function createInteraction() {
@@ -41,7 +40,9 @@ test('play retries once on transient youtube error and then succeeds', async () 
     },
     musicManager: {
       withGuildLock: async (_guildId, task) => task(),
-      getOrCreate: () => ({ enqueue: async () => ({ started: true }) }),
+      getOrCreate: () => ({
+        enqueue: async () => ({ started: true }),
+      }),
     },
     log: { info() {}, warn() {}, error() {} },
   };
@@ -51,6 +52,5 @@ test('play retries once on transient youtube error and then succeeds', async () 
   assert.equal(calls, 2);
   assert.ok(interaction._replies.length >= 3);
   assert.equal(interaction._replies[0].embeds[0].data.description, messages.play.searching);
-  assert.equal(interaction._replies[interaction._replies.length - 1].embeds[0].data.title, messages.embeds.nowPlayingTitle);
-  assert.equal(interaction._replies[interaction._replies.length - 1].components[0].components[1].data.custom_id, MUSIC_CONTROL_IDS.pause);
+  assert.equal(interaction._replies[interaction._replies.length - 1].embeds[0].data.description, messages.play.nowPlaying('Billie Jean'));
 });
