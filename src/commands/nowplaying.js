@@ -1,6 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
-const { errorEmbed } = require('../ui/embeds');
-const { nowPlayingMessage } = require('../ui/musicControls');
+const { errorEmbed, nowPlayingEmbed } = require('../ui/embeds');
 const { messages } = require('../config/messages');
 const { requireSameVoiceChannel } = require('./voiceAccess');
 
@@ -10,6 +9,6 @@ module.exports = {
     const player = musicManager.get(interaction.guildId);
     requireSameVoiceChannel(interaction, player);
     if (!player?.current) return interaction.reply({ embeds: [errorEmbed(messages.playback.noCurrentTrack)], ephemeral: true });
-    return interaction.reply(nowPlayingMessage(player.current, player));
+    return interaction.reply({ embeds: [nowPlayingEmbed(player.current, player)] });
   },
 };

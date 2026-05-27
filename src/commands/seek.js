@@ -16,6 +16,7 @@ module.exports = {
       if (!player?.current) throw new UserFacingMusicError(messages.playback.noCurrentTrack);
       const seconds = interaction.options.getInteger('seconds', true);
       await player.seek(seconds);
+      await player.refreshNowPlayingMessage();
       return interaction.editReply({ embeds: [successEmbed(messages.playback.seekedTo(seconds))] });
     });
   },

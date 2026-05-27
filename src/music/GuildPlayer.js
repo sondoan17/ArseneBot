@@ -339,6 +339,16 @@ class GuildPlayer extends EventEmitter {
     return sentMessage;
   }
 
+  async refreshNowPlayingMessage() {
+    if (!this.current) return null;
+    if (this.nowPlayingMessageRef?.edit) {
+      const updatedMessage = await this.nowPlayingMessageRef.edit(nowPlayingMessage(this.current, this));
+      this.nowPlayingMessageRef = updatedMessage || this.nowPlayingMessageRef;
+      return this.nowPlayingMessageRef;
+    }
+    return this.publishNowPlayingMessage();
+  }
+
   async clearNowPlayingMessage() {
     if (!this.nowPlayingMessageRef?.delete) {
       this.nowPlayingMessageRef = null;
