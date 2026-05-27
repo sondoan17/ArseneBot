@@ -16,8 +16,8 @@ function nowPlayingEmbed(track, player) {
     .setDescription(`[${truncate(track.title, 100)}](${track.url})`)
     .addFields(
       { name: 'Thời lượng', value: formatDuration(track.duration), inline: true },
-      { name: 'Âm lượng', value: `${player.volume}%`, inline: true },
-      { name: 'Loop', value: player.loopMode, inline: true },
+      { name: 'Âm lượng', value: `${player.volume ?? 100}%`, inline: true },
+      { name: 'Loop', value: String(player.loopMode ?? 'off'), inline: true },
     );
   if (track.thumbnail) embed.setThumbnail(track.thumbnail);
   return embed;

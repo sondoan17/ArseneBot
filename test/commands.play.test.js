@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const playCommand = require('../src/commands/play');
+const { MUSIC_CONTROL_IDS } = require('../src/ui/musicControls');
 const { UserFacingMusicError } = require('../src/music/errors');
 
 function createInteraction() {
@@ -49,5 +50,6 @@ test('play retries once on transient youtube error and then succeeds', async () 
   assert.equal(calls, 2);
   assert.ok(interaction._replies.length >= 3);
   assert.match(interaction._replies[0].embeds[0].data.description, /Ae đợi tí anh Độ đang tìm bài hát/);
-  assert.match(interaction._replies[interaction._replies.length - 1].embeds[0].data.description, /Đang phát/);
+  assert.match(interaction._replies[interaction._replies.length - 1].embeds[0].data.title, /Đang phát/);
+  assert.equal(interaction._replies[interaction._replies.length - 1].components[0].components[1].data.custom_id, MUSIC_CONTROL_IDS.pause);
 });

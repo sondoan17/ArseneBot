@@ -1,9 +1,11 @@
 const { Events } = require('discord.js');
-const { errorEmbed } = require('../ui/embeds');
+const { errorEmbed, successEmbed } = require('../ui/embeds');
+const { nowPlayingMessage, MUSIC_CONTROL_IDS } = require('../ui/musicControls');
 const { UserFacingMusicError } = require('../music/errors');
+const { requireSameVoiceChannel } = require('../commands/voiceAccess');
 
 // Commands that need early deferReply (slow operations: search, stream, voice join)
-const DEFER_COMMANDS = new Set(['alo', 'mixi', 'play', 'seek']);
+const DEFER_COMMANDS = new Set(['alo', 'mixi', 'play', 'playnext', 'seek']);
 
 function commandOptionsSummary(interaction) {
   const options = interaction.options?.data || [];
@@ -18,9 +20,90 @@ function commandOptionsSummary(interaction) {
   }).join(' ');
 }
 
+async function handleMusicControl(interaction, context) {
+  const { musicManager } = context;
+
+  await musicManager.withGuildLock(interaction.guildId, async () => {
+    const player = musicManager.get(interaction.guildId);
+    requireSameVoiceChannel(interaction, player);
+
+    if (!player) {
+      await interaction.reply({ embeds: [errorEmbed('Bot chưa phát nhạc trong server này.')], ephemeral: true });
+      return;
+    }
+
+    switch (interaction.customId) {
+      case MUSIC_CONTROL_IDS.back: {
+        const previous = await player.back();
+        if (!previous || !player.current) {
+          await interaction.reply({ embeds: [errorEmbed('Không có bài nào trước đó để phát lại.')], ephemeral: true });
+          return;
+        }
+        await interaction.update(nowPlayingMessage(player.current, player));
+        return;
+      }
+      case MUSIC_CONTROL_IDS.pause: {
+        if (!player.current) {
+          await interaction.reply({ embeds: [errorEmbed('Không có bài nào đang phát.')], ephemeral: true });
+          return;
+        }
+        player.pause();
+        await interaction.update(nowPlayingMessage(player.current, player));
+        return;
+      }
+      case MUSIC_CONTROL_IDS.resume: {
+        if (!player.current) {
+          await interaction.reply({ embeds: [errorEmbed('Không có bài nào đang phát.')], ephemeral: true });
+          return;
+        }
+        player.resume();
+        await interaction.update(nowPlayingMessage(player.current, player));
+        return;
+      }
+      case MUSIC_CONTROL_IDS.skip: {
+        if (!player.current) {
+          await interaction.reply({ embeds: [errorEmbed('Không có bài nào đang phát.')], ephemeral: true });
+          return;
+        }
+        const currentTitle = player.current.title;
+        player.skip();
+        const payload = player.current
+          ? nowPlayingMessage(player.current, player)
+          : { embeds: [successEmbed(`Đã bỏ bài hiện tại: **${currentTitle}**`)], components: [] };
+        await interaction.update(payload);
+        return;
+      }
+      case MUSIC_CONTROL_IDS.stop: {
+        player.stop();
+        await interaction.update({ embeds: [successEmbed('Đã dừng phát và xóa hàng đợi.')], components: [] });
+        return;
+      }
+      default:
+        await interaction.reply({ embeds: [errorEmbed('Nút điều khiển không hợp lệ.')], ephemeral: true });
+    }
+  });
+}
+
 module.exports = {
   name: Events.InteractionCreate,
   async execute(interaction, context) {
+    if (interaction.isButton() && Object.values(MUSIC_CONTROL_IDS).includes(interaction.customId)) {
+      try {
+        await handleMusicControl(interaction, context);
+      } catch (error) {
+        context.log.error(interaction.guildId, `[button] error ${interaction.customId}`, error);
+        const message = error instanceof UserFacingMusicError ? error.message : 'Có lỗi xảy ra, đã ghi log.';
+        const payload = { embeds: [errorEmbed(message)], ephemeral: true };
+        try {
+          if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
+          else await interaction.reply(payload);
+        } catch (replyError) {
+          context.log.warn(interaction.guildId, `Failed to send button error response: ${replyError.code || replyError.message}`);
+        }
+      }
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     const command = interaction.client.commands.get(interaction.commandName);

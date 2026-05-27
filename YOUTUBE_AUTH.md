@@ -2,9 +2,11 @@
 
 ArseneBot supports three yt-dlp auth methods, in this priority order:
 
-1. `YTDLP_COOKIES_FROM_BROWSER`
+1. `YTDLP_COOKIES_FROM_BROWSER` (defaults to `chromium:$CHROMIUM_PROFILE`)
 2. `YOUTUBE_COOKIE_FILE` or the default `/app/cookies.txt`
 3. `YOUTUBE_COOKIE` JSON env, converted to Netscape cookies at container startup
+
+The recommended setup is a single persistent Chromium profile that both yt-dlp and `scripts/refresh-yt-auth.js` use. That keeps rebuilds/recreates from drifting onto different cookie stores.
 
 ## Recommended VPS setup: persistent Chromium profile
 
@@ -17,13 +19,17 @@ mkdir -p /opt/arsenebot/chromium-profile
 chown -R 1001:1001 /opt/arsenebot/chromium-profile
 ```
 
-2. Run the container with the profile mounted and tell yt-dlp to read it:
+2. Run the container with the config root mounted once, and point both yt-dlp and Playwright at the same persistent profile:
 
 ```bash
 docker run -d --name arsenebot --network host \
   -e DISCORD_TOKEN=... \
   -e DISCORD_CLIENT_ID=... \
-  -e YTDLP_COOKIES_FROM_BROWSER=chromium:/home/bot/.config/chromium \
+  -e CHROMIUM_CONFIG_ROOT=/home/bot/.config/chromium \
+  -e CHROMIUM_PROFILE=/home/bot/.config/chromium/chromium \
+  -e YTDLP_COOKIES_FROM_BROWSER=chromium:/home/bot/.config/chromium/chromium \
+  -e GMAIL_USER=... \
+  -e GMAIL_PASS=... \
   -v /opt/arsenebot/chromium-profile:/home/bot/.config/chromium \
   arsenebot:latest
 ```
@@ -34,7 +40,7 @@ docker run -d --name arsenebot --network host \
 
 ```bash
 docker exec arsenebot yt-dlp \
-  --cookies-from-browser chromium:/home/bot/.config/chromium \
+  --cookies-from-browser chromium:/home/bot/.config/chromium/chromium \
   --dump-json "ytsearch1:billie jean"
 ```
 
@@ -66,7 +72,9 @@ When `YTDLP_PO_TOKEN` is set, ArseneBot asks yt-dlp to use the web client. Witho
 
 ## Useful env vars
 
-- `YTDLP_COOKIES_FROM_BROWSER`: passed to yt-dlp, for example `chromium:/home/bot/.config/chromium`.
+- `CHROMIUM_CONFIG_ROOT`: mounted Chromium config root, default `/home/bot/.config/chromium`.
+- `CHROMIUM_PROFILE`: persistent Chromium profile used by both Playwright and yt-dlp, default `/home/bot/.config/chromium/chromium`.
+- `YTDLP_COOKIES_FROM_BROWSER`: passed to yt-dlp, default `chromium:$CHROMIUM_PROFILE`.
 - `YOUTUBE_COOKIE_FILE`: Netscape cookies path, default `/app/cookies.txt`.
 - `YOUTUBE_COOKIE`: JSON cookie array; converted into `YOUTUBE_COOKIE_FILE` on startup.
 - `YTDLP_PO_TOKEN`: optional YouTube PO token.

@@ -121,6 +121,49 @@ test('enqueue preserves queued tracks when clearing stale current while idle', a
   assert.deepEqual(player.history.map((item) => item.title), ['stale-current']);
 });
 
+test('enqueueNext inserts tracks at the front of the queue', async () => {
+  const { player } = createPlayer();
+  await player.enqueue([track('one'), track('two')]);
+
+  const result = await player.enqueueNext([track('urgent'), track('urgent-2')]);
+
+  assert.equal(result.started, false);
+  assert.equal(result.added, 2);
+  assert.deepEqual(player.queue.map((item) => item.title), ['urgent', 'urgent-2', 'two']);
+});
+
+test('back restores the previous track and keeps current next in queue', async () => {
+  const { player } = createPlayer();
+  await player.enqueue([track('one'), track('two')]);
+  await player.handleIdle();
+
+  const previous = await player.back();
+
+  assert.equal(previous.title, 'one');
+  assert.equal(player.current.title, 'one');
+  assert.deepEqual(player.queue.map((item) => item.title), ['two']);
+  assert.deepEqual(player.history.map((item) => item.title), []);
+});
+
+test('autoplay adds a related track when queue runs out', async () => {
+  const notified = [];
+  const { player } = createPlayer({
+    youtube: {
+      createStream: async (current, seekSeconds = 0) => ({ stream: { current, seekSeconds }, type: 'opus' }),
+      getRelatedTrack: async () => track('related'),
+    },
+    notify: async (message) => notified.push(message),
+  });
+  await player.enqueue([track('one')]);
+  player.setAutoplayEnabled(true);
+
+  await player.handleIdle();
+
+  assert.equal(player.current.title, 'related');
+  assert.deepEqual(player.history.map((item) => item.title), ['one']);
+  assert.equal(notified[0], 'Tự phát tiếp: **related**');
+});
+
 test('setVolume updates current audio resource immediately', async () => {
   const { player, resources } = createPlayer();
   await player.enqueue([track('one')]);

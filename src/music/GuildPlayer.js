@@ -35,6 +35,7 @@ class GuildPlayer extends EventEmitter {
     this.current = null;
     this.history = [];
     this.loopMode = 'off';
+    this.autoplayEnabled = false;
     this.volume = 100;
     this.paused = false;
     this.idleTimer = null;
@@ -79,6 +80,17 @@ class GuildPlayer extends EventEmitter {
     }
 
     this.queue.push(...tracks);
+    return { started: false, added: tracks.length };
+  }
+
+  async enqueueNext(tracks) {
+    this.clearIdleTimer();
+    this.resetStaleCurrentIfIdle();
+    if (!this.current && this.queue.length === 0) {
+      return this.enqueue(tracks);
+    }
+
+    this.queue.unshift(...tracks);
     return { started: false, added: tracks.length };
   }
 
@@ -172,6 +184,14 @@ class GuildPlayer extends EventEmitter {
     if (this.loopMode === 'queue') this.queue.push(finished);
     else this.history.push(finished);
 
+    if (this.loopMode === 'off' && this.queue.length === 0 && this.autoplayEnabled) {
+      const relatedTrack = await this.youtube.getRelatedTrack?.(finished, finished.requestedBy);
+      if (relatedTrack) {
+        this.queue.push(relatedTrack);
+        await this.notify(`Tự phát tiếp: **${relatedTrack.title}**`);
+      }
+    }
+
     this.current = this.queue.shift() || null;
     if (this.current) await this.playCurrent();
     else startIdleTimerSafe(this);
@@ -224,6 +244,10 @@ class GuildPlayer extends EventEmitter {
 
   setLoopMode(loopMode) {
     this.loopMode = loopMode;
+  }
+
+  setAutoplayEnabled(enabled) {
+    this.autoplayEnabled = Boolean(enabled);
   }
 
   isIdle() {
@@ -280,6 +304,17 @@ class GuildPlayer extends EventEmitter {
     const zeroBasedIndex = index - 1;
     if (zeroBasedIndex < 0 || zeroBasedIndex >= this.queue.length) return null;
     return this.queue.splice(zeroBasedIndex, 1)[0];
+  }
+
+  async back() {
+    const previous = this.history.pop() || null;
+    if (!previous) return null;
+
+    this.clearIdleTimer();
+    if (this.current) this.queue.unshift(this.current);
+    this.current = previous;
+    await this.playCurrent();
+    return previous;
   }
 
   startIdleTimer() {

@@ -9,11 +9,13 @@
  *   REFRESH_YT_AUTH_TIMEOUT        - ms before giving up (default: 90 000)
  */
 
+require('dotenv').config();
+
 const { chromium } = require('playwright-core');
 const fs = require('fs');
 const path = require('path');
+const { CHROMIUM_PROFILE_DIR: PROFILE } = require('../src/music/authConfig');
 
-const PROFILE = process.env.CHROMIUM_PROFILE || '/home/bot/.config/chromium/chromium';
 const CHROME_BIN = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || '/usr/lib/chromium/chrome';
 const TIMEOUT = parseInt(process.env.REFRESH_YT_AUTH_TIMEOUT || '90000', 10);
 const HEADLESS = process.env.REFRESH_YT_AUTH_HEADLESS === 'true';
@@ -169,6 +171,45 @@ async function continueFromAccountChooser(page, password) {
   return true;
 }
 
+async function detectGooglePromptChallenge(page) {
+  const url = page.url();
+  if (!url.includes('/challenge/dp')) return null;
+
+  const details = await page.evaluate(() => {
+    const text = (selector) => document.querySelector(selector)?.textContent?.trim() || '';
+    const heading = text('h1, [role="heading"]');
+    const subheading = text('h2');
+    const body = Array.from(document.querySelectorAll('div, p, span'))
+      .map((node) => node.textContent?.trim() || '')
+      .find((value) => /Google sent a notification|Tap Yes|check your/i.test(value)) || '';
+    const deviceText = [heading, subheading, body]
+      .find((value) => /check your /i.test(value)) || '';
+    const match = deviceText.match(/check your\s+(.+)/i);
+    const tryAnotherWay = Array.from(document.querySelectorAll('button, a, div[role="button"]'))
+      .map((node) => node.textContent?.trim() || '')
+      .find((value) => /try another way/i.test(value)) || '';
+    const resend = Array.from(document.querySelectorAll('button, a, div[role="button"]'))
+      .map((node) => node.textContent?.trim() || '')
+      .find((value) => /resend it/i.test(value)) || '';
+    return {
+      heading,
+      body,
+      deviceName: match?.[1]?.trim() || '',
+      hasTryAnotherWay: Boolean(tryAnotherWay),
+      hasResend: Boolean(resend),
+    };
+  });
+
+  return {
+    url,
+    heading: details.heading || 'Google Prompt',
+    body: details.body || '',
+    deviceName: details.deviceName || 'trusted phone',
+    hasTryAnotherWay: details.hasTryAnotherWay,
+    hasResend: details.hasResend,
+  };
+}
+
 async function doGoogleLogin(page, email, password) {
   await debugState(page, 'youtube-home');
 
@@ -236,7 +277,17 @@ async function doGoogleLogin(page, email, password) {
   if (signedIn) {
     log.info('✅ Google / YouTube login successful!');
   } else {
-    log.warn('⛔ Login may have failed or encountered additional verification');
+    const googlePrompt = await detectGooglePromptChallenge(page);
+    if (googlePrompt) {
+      log.warn(
+        `⛔ Google Prompt required on ${googlePrompt.deviceName}. heading=${googlePrompt.heading} tryAnotherWay=${googlePrompt.hasTryAnotherWay} resend=${googlePrompt.hasResend} url=${googlePrompt.url}`,
+      );
+      if (googlePrompt.body) {
+        log.warn(`[google-prompt] ${googlePrompt.body}`);
+      }
+    } else {
+      log.warn('⛔ Login may have failed or encountered additional verification');
+    }
   }
   return signedIn;
 }

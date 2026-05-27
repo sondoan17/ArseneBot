@@ -144,6 +144,27 @@ function createMockProc() {
   };
 }
 
+test('getRelatedTrack returns a different search result for autoplay', async () => {
+  const calls = [];
+  const service = createYoutubeService({
+    retryDelayMs: 0,
+    enableInvidious: false,
+    runYtDlp: async (args) => {
+      calls.push(args);
+      return [
+        jsonLine({ title: 'Same', webpage_url: 'https://youtube.com/watch?v=12345678901', duration: 90 }),
+        jsonLine({ title: 'Related Song', webpage_url: 'https://youtube.com/watch?v=abcdefghijk', duration: 120 }),
+      ].join('');
+    },
+  });
+
+  const track = await service.getRelatedTrack({ title: 'Same', url: 'https://youtube.com/watch?v=12345678901', requestedBy });
+
+  assert.equal(calls[0].at(-1), 'ytsearch5:Same');
+  assert.equal(track.title, 'Related Song');
+  assert.equal(track.url, 'https://youtube.com/watch?v=abcdefghijk');
+});
+
 test('createStream retries once when stream startup fails early', async () => {
   let attempts = 0;
   const service = createYoutubeService({
